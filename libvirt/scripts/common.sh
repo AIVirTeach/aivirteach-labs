@@ -28,7 +28,13 @@ require_root_or_sudo() {
 }
 
 as_root() {
-  if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  elif [[ "${AIVIRTEACH_NONINTERACTIVE:-false}" == "true" ]]; then
+    sudo -n "$@"
+  else
+    sudo "$@"
+  fi
 }
 
 validate_lab_id() {
@@ -74,9 +80,16 @@ ensure_storage_layout() {
 get_vm_ip() {
   local vm_name="$1"
   local ip=""
-  ip="$(
-    as_root virsh --connect qemu:///system domifaddr lab-001 --source lease |
-    awk '$3 == "ipv4" {sub(/\/.*/, "", $4); print $4; exit}'
-    )"
+
+  ip="$(as_root virsh --connect qemu:///system domifaddr "$vm_name" --source agent 2>/dev/null \
+    | awk '$1 != "lo" && $3 == "ipv4" && $4 !~ /^127\./ {sub(/\/.*/, "", $4); print $4; exit}')" \
+    || true
+
+  if [[ -z "$ip" ]]; then
+    ip="$(as_root virsh --connect qemu:///system domifaddr "$vm_name" --source lease 2>/dev/null \
+      | awk '$3 == "ipv4" && $4 !~ /^127\./ {sub(/\/.*/, "", $4); print $4; exit}')" \
+      || true
+  fi
+
   printf '%s\n' "$ip"
 }
