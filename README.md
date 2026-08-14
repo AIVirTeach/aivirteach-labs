@@ -58,3 +58,38 @@ ssh -N -L 18765:127.0.0.1:8765 your-user@LIBVIRT_HOST
 ```
 
 生产环境应使用 HTTPS 反向代理和防火墙。systemd 模板位于 `systemd/aivirteach-labs.service`，默认部署目录是 `/opt/aivirteach-labs`，环境文件是 `/etc/aivirteach-labs.env`。
+
+## 查看虚拟机日志
+
+`libvirt/scripts/vm-logs.sh` 用于读取指定虚拟机在宿主机上的 QEMU/libvirt 日志或相关 systemd journal。它不会进入虚拟机内部读取 guest OS 日志。
+
+查看最近 200 行 QEMU 日志：
+
+```bash
+./libvirt/scripts/vm-logs.sh lab-001
+```
+
+指定行数：
+
+```bash
+./libvirt/scripts/vm-logs.sh lab-001 --lines 500
+```
+
+查看宿主机 journal 中包含该 VM ID 的记录：
+
+```bash
+./libvirt/scripts/vm-logs.sh lab-001 --source journal
+```
+
+同时查看两类日志：
+
+```bash
+./libvirt/scripts/vm-logs.sh lab-001 --source all --lines 300
+```
+
+持续跟踪新日志，使用 `Ctrl+C` 停止：
+
+```bash
+./libvirt/scripts/vm-logs.sh lab-001 --source qemu --follow
+./libvirt/scripts/vm-logs.sh lab-001 --source journal --follow
+```
