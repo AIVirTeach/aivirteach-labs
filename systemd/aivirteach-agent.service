@@ -1,0 +1,22 @@
+[Unit]
+Description=AIVirTeach course-aware troubleshooting agent
+After=network-online.target aivirteach-labs-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aivirteach-agent
+Group=aivirteach-agent
+WorkingDirectory=/opt/aivirteach-labs
+EnvironmentFile=/etc/aivirteach-agent.env
+ExecStart=/opt/aivirteach-labs/start_agent_service.sh
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
