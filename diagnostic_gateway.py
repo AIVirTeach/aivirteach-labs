@@ -14,7 +14,8 @@ from enum import Enum
 from pathlib import PurePosixPath
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -26,6 +27,12 @@ COMMAND_TIMEOUT_SECONDS = int(os.getenv("AIVIRTEACH_DIAGNOSTIC_COMMAND_TIMEOUT",
 QGA_POLL_SECONDS = 0.1
 
 router = APIRouter(prefix="/v1/diagnostics", tags=["diagnostics"])
+
+diagnostic_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="DiagnosticBearer",
+    description="AIVIRTEACH_DIAGNOSTIC_TOKEN — read-only diagnostics only.",
+)
 
 
 class DiagnosticTool(str, Enum):
@@ -69,7 +76,7 @@ class HostCommandError(RuntimeError):
 
 
 async def require_diagnostic_token(
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(diagnostic_bearer)],
 ) -> None:
     expected = os.getenv("AIVIRTEACH_DIAGNOSTIC_TOKEN", "")
     if not expected:
@@ -77,8 +84,11 @@ async def require_diagnostic_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AIVIRTEACH_DIAGNOSTIC_TOKEN is not configured.",
         )
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(supplied, expected):
+    if (
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not hmac.compare_digest(credentials.credentials, expected)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing diagnostic bearer token.",

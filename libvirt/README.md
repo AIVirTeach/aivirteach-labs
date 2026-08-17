@@ -84,7 +84,7 @@ Never embed production tokens or private keys in the golden image.
 ## 3. Build the golden qcow2 image
 
 ```bash
-./scripts/build-base-image.sh
+./libvirt/scripts/build-base-image.sh
 ```
 
 The script downloads the current released Ubuntu 24.04 cloud image, verifies `SHA256SUMS`, starts a builder VM, installs XFCE/XRDP, cleans clone-specific identity, powers off, and publishes:
@@ -105,7 +105,7 @@ A VNC display of `:0` maps to host port `5900` and listens on `127.0.0.1`.
 Force rebuild:
 
 ```bash
-./scripts/build-base-image.sh --force
+./libvirt/scripts/build-base-image.sh --force
 ```
 
 The build script refuses `--force` while any learner overlays exist. Publish versioned images instead of replacing an in-use base.
@@ -113,13 +113,13 @@ The build script refuses `--force` while any learner overlays exist. Publish ver
 ## 4. Create a learner VM
 
 ```bash
-./scripts/create-learner-vm.sh lab-001
+./libvirt/scripts/create-learner-vm.sh lab-001
 ```
 
 Optional resources and SSH key:
 
 ```bash
-./scripts/create-learner-vm.sh lab-001 \
+./libvirt/scripts/create-learner-vm.sh lab-001 \
   --memory 4096 \
   --vcpus 2 \
   --ssh-key "$HOME/.ssh/id_ed25519.pub"
@@ -149,15 +149,15 @@ For production, replace plaintext credential files with encrypted, short-lived s
 ## 5. VM lifecycle
 
 ```bash
-./scripts/vm-control.sh status lab-001
-./scripts/vm-control.sh start lab-001
-./scripts/vm-control.sh stop lab-001
-./scripts/vm-control.sh force-stop lab-001
-./scripts/vm-control.sh reboot lab-001
-./scripts/vm-control.sh ip lab-001
-./scripts/vm-control.sh vnc lab-001
-sudo ./scripts/vm-control.sh credentials lab-001
-./scripts/vm-control.sh delete lab-001 --yes
+./libvirt/scripts/vm-control.sh status lab-001
+./libvirt/scripts/vm-control.sh start lab-001
+./libvirt/scripts/vm-control.sh stop lab-001
+./libvirt/scripts/vm-control.sh force-stop lab-001
+./libvirt/scripts/vm-control.sh reboot lab-001
+./libvirt/scripts/vm-control.sh ip lab-001
+./libvirt/scripts/vm-control.sh vnc lab-001
+sudo ./libvirt/scripts/vm-control.sh credentials lab-001
+./libvirt/scripts/vm-control.sh delete lab-001 --yes
 ```
 
 Deletion removes only the learner VM, overlay, seed, and learner credentials. It does not delete the golden image.

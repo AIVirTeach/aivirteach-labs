@@ -1,5 +1,5 @@
 [Unit]
-Description=AIVirTeach VM management and read-only diagnostic gateway
+Description=AIVirTeach read-only diagnostic gateway
 After=network-online.target libvirtd.service
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/aivirteach-labs
-EnvironmentFile=/etc/aivirteach-labs.env
+EnvironmentFile=/etc/aivirteach-diagnostics.env
 ExecStart=/opt/aivirteach-labs/start_gateway_service.sh
 Restart=on-failure
 RestartSec=3

@@ -1,13 +1,15 @@
 # AIVirTeach troubleshooting agent
 
-This repository now contains two security domains:
+This repository contains three separate service boundaries:
 
-- `gateway_service.py` runs with libvirt privileges on port 8765. It exposes the
-  existing VM lifecycle API under `AIVIRTEACH_API_TOKEN` and a fixed, read-only
-  diagnostic API under `AIVIRTEACH_DIAGNOSTIC_TOKEN`.
+- `docs_gateway_service.py` runs with libvirt privileges on port 8760. It exposes
+  VM lifecycle operations under `AIVIRTEACH_API_TOKEN` and one unified Swagger
+  document, but it does not execute Diagnostic or Agent operations.
+- `gateway_service.py` runs with libvirt privileges on port 8765. It exposes only
+  fixed, read-only diagnostic operations under `AIVIRTEACH_DIAGNOSTIC_TOKEN`.
 - `agent_service.py` runs as an unprivileged account on port 8770. It receives a
   normalized course-step snapshot from `aivirteach-server`, asks a replaceable
-  model provider what evidence is needed, and calls only the diagnostic API.
+  model provider what evidence is needed, and calls only port 8765.
 
 The Agent never receives `AIVIRTEACH_API_TOKEN`, VM credentials, a shell tool,
 or lifecycle operations. Diagnostic commands are fixed argv templates executed
@@ -22,21 +24,32 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Generate two unrelated tokens, then start the combined root gateway:
+Generate separate administration, diagnostic, and Agent tokens. Start the
+Diagnostic Gateway first:
 
 ```bash
-export AIVIRTEACH_API_TOKEN="$(openssl rand -hex 32)"
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
-sudo --preserve-env=AIVIRTEACH_API_TOKEN,AIVIRTEACH_DIAGNOSTIC_TOKEN \
+sudo --preserve-env=AIVIRTEACH_DIAGNOSTIC_TOKEN \
   ./start_gateway_service.sh
 ```
 
-In another terminal, start the Agent with the same diagnostic token and a
-different server-to-Agent token:
+Start the VM Manager and unified docs separately:
+
+```bash
+export AIVIRTEACH_API_TOKEN="$(openssl rand -hex 32)"
+export AIVIRTEACH_DIAGNOSTIC_DOCS_URL="http://127.0.0.1:8765"
+sudo --preserve-env=AIVIRTEACH_API_TOKEN,AIVIRTEACH_DIAGNOSTIC_DOCS_URL \
+  ./start_service.sh
+```
+
+In another terminal, start the Agent with the same diagnostic token used by
+port 8765 and a different server-to-Agent token:
 
 ```bash
 export AIVIRTEACH_AGENT_TOKEN="$(openssl rand -hex 32)"
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="the-same-diagnostic-token-as-the-gateway"
+export AIVIRTEACH_GATEWAY_URL="http://127.0.0.1:8765"
+export AIVIRTEACH_AGENT_CORS_ORIGINS="http://127.0.0.1:8760,http://localhost:8760"
 export AIVIRTEACH_MODEL_PROVIDER="fake"
 ./start_agent_service.sh
 ```
@@ -60,6 +73,8 @@ override them per request.
 Liveness and readiness:
 
 ```bash
+curl http://127.0.0.1:8765/health
+curl http://127.0.0.1:8765/ready
 curl http://127.0.0.1:8770/health
 curl http://127.0.0.1:8770/ready
 ```

@@ -10,7 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 
@@ -32,6 +33,12 @@ app = FastAPI(
 )
 
 _lab_locks: dict[str, asyncio.Lock] = {}
+
+admin_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="AdminBearer",
+    description="AIVIRTEACH_API_TOKEN — VM lifecycle and credentials.",
+)
 
 
 class VMAction(str, Enum):
@@ -86,7 +93,7 @@ def _verify_script_layout() -> None:
 
 
 async def require_api_token(
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(admin_bearer)],
 ) -> None:
     expected = _api_token()
     if not expected:
@@ -95,8 +102,11 @@ async def require_api_token(
             detail="AIVIRTEACH_API_TOKEN is not configured.",
         )
 
-    scheme, _, supplied = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not hmac.compare_digest(supplied, expected):
+    if (
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not hmac.compare_digest(credentials.credentials, expected)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing bearer token.",

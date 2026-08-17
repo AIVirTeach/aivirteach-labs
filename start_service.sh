@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 : "${AIVIRTEACH_API_TOKEN:?Set AIVIRTEACH_API_TOKEN before starting the API}"
 
 API_HOST="${AIVIRTEACH_API_HOST:-127.0.0.1}"
-API_PORT="${AIVIRTEACH_API_PORT:-8765}"
+API_PORT="${AIVIRTEACH_API_PORT:-8760}"
 PYTHON_BIN="${AIVIRTEACH_PYTHON:-${PROJECT_DIR}/.venv/bin/python}"
 
 [[ -x "$PYTHON_BIN" ]] || {
@@ -26,4 +26,4 @@ fi
 }
 
 cd "$PROJECT_DIR"
-exec "$PYTHON_BIN" -m uvicorn service:app --host "$API_HOST" --port "$API_PORT"
+exec "$PYTHON_BIN" -m uvicorn docs_gateway_service:app --host "$API_HOST" --port "$API_PORT"

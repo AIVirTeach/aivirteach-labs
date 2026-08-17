@@ -1,7 +1,8 @@
 import json
+import os
 import unittest
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -85,6 +86,12 @@ class FakeGateway:
 
 class AgentApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        self.cors_environment = patch.dict(
+            os.environ,
+            {"AIVIRTEACH_AGENT_CORS_ORIGINS": "http://127.0.0.1:8760"},
+        )
+        self.cors_environment.start()
+        self.addCleanup(self.cors_environment.stop)
         self.gateway = FakeGateway()
         self.provider = FakeProvider()
         self.app = create_app(
@@ -107,6 +114,32 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_diagnose_requires_agent_token(self) -> None:
         response = await self.client.post("/v1/agent/diagnose", json=request_payload())
         self.assertEqual(response.status_code, 401)
+
+    async def test_swagger_origin_is_allowed_by_cors(self) -> None:
+        response = await self.client.options(
+            "/v1/agent/diagnose",
+            headers={
+                "Origin": "http://127.0.0.1:8760",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"),
+            "http://127.0.0.1:8760",
+        )
+
+    async def test_agent_openapi_uses_standard_bearer_scheme(self) -> None:
+        schema = self.app.openapi()
+        operation = schema["paths"]["/v1/agent/diagnose"]["post"]
+        self.assertEqual(operation["security"], [{"AgentBearer": []}])
+        self.assertIn("AgentBearer", schema["components"]["securitySchemes"])
+        parameter_names = {
+            parameter.get("name", "").lower()
+            for parameter in operation.get("parameters", [])
+        }
+        self.assertNotIn("authorization", parameter_names)
 
     async def test_fake_provider_smoke_response(self) -> None:
         response = await self.client.post(

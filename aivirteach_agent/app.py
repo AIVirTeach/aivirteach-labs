@@ -2,17 +2,35 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Settings
 from .gateway import DiagnosticGateway, HttpDiagnosticGateway
 from .models import DiagnoseRequest, DiagnoseResponse
 from .orchestrator import AgentOrchestrator
 from .providers import FakeProvider, ModelProvider, OpenAICompatibleProvider
+
+
+agent_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="AgentBearer",
+    description="AIVIRTEACH_AGENT_TOKEN — server-to-Agent diagnosis requests.",
+)
+
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv(
+        "AIVIRTEACH_AGENT_CORS_ORIGINS",
+        "http://127.0.0.1:8760,http://localhost:8760",
+    )
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 
 
 def build_provider(settings: Settings) -> ModelProvider:
@@ -59,16 +77,27 @@ def create_app(
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=False,
+        allow_methods=["POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
     async def require_agent_token(
-        authorization: Annotated[str | None, Header()] = None,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)],
     ) -> None:
         if not config.agent_token:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="AIVIRTEACH_AGENT_TOKEN is not configured.",
             )
-        scheme, _, supplied = (authorization or "").partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(supplied, config.agent_token):
+        if (
+            credentials is None
+            or credentials.scheme.lower() != "bearer"
+            or not hmac.compare_digest(credentials.credentials, config.agent_token)
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or missing bearer token.",
