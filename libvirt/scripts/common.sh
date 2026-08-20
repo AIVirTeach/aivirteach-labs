@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+DEFAULTS_FILE="${MODULE_DIR}/config/defaults.env"
+
+[[ -f "$DEFAULTS_FILE" ]] || {
+  echo "ERROR: defaults file not found: $DEFAULTS_FILE" >&2
+  exit 1
+}
+
+# shellcheck disable=SC1090
+source "$DEFAULTS_FILE"
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+require_root_or_sudo() {
+  if [[ $EUID -ne 0 ]] && ! command -v sudo >/dev/null 2>&1; then
+    die "Run as root or install sudo."
+  fi
+}
+
+as_root() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  elif [[ "${AIVIRTEACH_NONINTERACTIVE:-false}" == "true" ]]; then
+    sudo -n "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+validate_lab_id() {
+  local lab_id="$1"
+  [[ "$lab_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$ ]] \
+    || die "Invalid lab ID '$lab_id'. Use 1-63 letters, numbers, '.', '_' or '-'."
+}
+
+choose_osinfo() {
+  local candidate
+  for candidate in ubuntu24.04 ubuntu22.04 ubuntu20.04 generic; do
+    if virt-install --osinfo list 2>/dev/null | awk '{print $1}' | grep -Fxq "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  printf 'generic\n'
+}
+
+ensure_default_network() {
+  if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" >/dev/null 2>&1; then
+    die "Libvirt network '$LIBVIRT_NETWORK' does not exist. Run scripts/install-host.sh first."
+  fi
+  if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" | grep -q 'Active:.*yes'; then
+    as_root virsh --connect qemu:///system net-start "$LIBVIRT_NETWORK" >/dev/null
+  fi
+  as_root virsh --connect qemu:///system net-autostart "$LIBVIRT_NETWORK" >/dev/null
+}
+
+ensure_storage_layout() {
+  as_root install -d -m 2770 -o root -g kvm \
+    "$AIVIRTEACH_ROOT" "$BASE_DIR" "$LABS_DIR" "$SEEDS_DIR"
+  as_root install -d -m 0750 -o root -g libvirt "$STATE_DIR"
+
+  if command -v setfacl >/dev/null 2>&1 && id libvirt-qemu >/dev/null 2>&1; then
+    as_root setfacl -m u:libvirt-qemu:rwx,m:rwx \
+      "$AIVIRTEACH_ROOT" "$BASE_DIR" "$LABS_DIR" "$SEEDS_DIR"
+    as_root setfacl -d -m u:libvirt-qemu:rwx,m:rwx \
+      "$BASE_DIR" "$LABS_DIR" "$SEEDS_DIR"
+  fi
+}
+
+get_vm_ip() {
+  local vm_name="$1"
+  local ip=""
+
+  ip="$(as_root virsh --connect qemu:///system domifaddr "$vm_name" --source agent 2>/dev/null \
+    | awk '$1 != "lo" && $3 == "ipv4" && $4 !~ /^127\./ {sub(/\/.*/, "", $4); print $4; exit}')" \
+    || true
+
+  if [[ -z "$ip" ]]; then
+    ip="$(as_root virsh --connect qemu:///system domifaddr "$vm_name" --source lease 2>/dev/null \
+      | awk '$3 == "ipv4" && $4 !~ /^127\./ {sub(/\/.*/, "", $4); print $4; exit}')" \
+      || true
+  fi
+
+  printf '%s\n' "$ip"
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=AIVirTeach read-only diagnostic gateway
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/aivirteach-labs
+EnvironmentFile=/etc/aivirteach-diagnostics.env
+ExecStart=/opt/aivirteach-labs/start_gateway_service.sh
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
