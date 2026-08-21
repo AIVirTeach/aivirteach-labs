@@ -25,11 +25,13 @@ class OpenAICompatibleProvider:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        thinking: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._model = model
+        self._thinking = thinking
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
 
@@ -44,6 +46,8 @@ class OpenAICompatibleProvider:
             "messages": [self._message_payload(message) for message in messages],
             "temperature": 0.1,
         }
+        if self._thinking:
+            payload["thinking"] = {"type": self._thinking}
         if tools:
             payload["tools"] = [
                 {

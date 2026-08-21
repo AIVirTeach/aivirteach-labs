@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_COURSE_DIRECTORY = (
+    PROJECT_DIR / ".cache" / "course" / "AI Daily Briefing" / "processed"
+)
 
 
 def _positive_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -24,6 +31,7 @@ class Settings:
     model_base_url: str
     model_api_key: str
     model_name: str
+    model_thinking: str = ""
     total_timeout_seconds: int = 40
     model_timeout_seconds: int = 15
     tool_timeout_seconds: int = 8
@@ -31,6 +39,7 @@ class Settings:
     max_tool_calls: int = 6
     max_tool_output_chars: int = 32_768
     max_concurrent_requests: int = 4
+    course_directory: str = str(DEFAULT_COURSE_DIRECTORY)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,6 +53,7 @@ class Settings:
             model_base_url=os.getenv("AIVIRTEACH_MODEL_BASE_URL", "").rstrip("/"),
             model_api_key=os.getenv("AIVIRTEACH_MODEL_API_KEY", ""),
             model_name=os.getenv("AIVIRTEACH_MODEL_NAME", ""),
+            model_thinking=os.getenv("AIVIRTEACH_MODEL_THINKING", "").strip().lower(),
             total_timeout_seconds=_positive_int(
                 "AIVIRTEACH_AGENT_TOTAL_TIMEOUT", 40, 5, 120
             ),
@@ -63,6 +73,9 @@ class Settings:
             max_concurrent_requests=_positive_int(
                 "AIVIRTEACH_MAX_CONCURRENT_REQUESTS", 4, 1, 32
             ),
+            course_directory=os.getenv(
+                "AIVIRTEACH_COURSE_DIR", str(DEFAULT_COURSE_DIRECTORY)
+            ),
         )
 
     def readiness_errors(self) -> list[str]:
@@ -80,4 +93,8 @@ class Settings:
                 errors.append("AIVIRTEACH_MODEL_API_KEY is not configured")
             if not self.model_name:
                 errors.append("AIVIRTEACH_MODEL_NAME is not configured")
+            if self.model_thinking not in {"", "enabled", "disabled"}:
+                errors.append(
+                    "AIVIRTEACH_MODEL_THINKING must be enabled or disabled"
+                )
         return errors

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Settings
+from .course_repository import CourseRepository
 from .gateway import DiagnosticGateway, HttpDiagnosticGateway
 from .models import DiagnoseRequest, DiagnoseResponse
 from .orchestrator import AgentOrchestrator
@@ -40,6 +41,7 @@ def build_provider(settings: Settings) -> ModelProvider:
             api_key=settings.model_api_key,
             model=settings.model_name,
             timeout_seconds=settings.model_timeout_seconds,
+            thinking=settings.model_thinking or None,
         )
     return FakeProvider()
 
@@ -49,6 +51,7 @@ def create_app(
     settings: Settings | None = None,
     provider: ModelProvider | None = None,
     gateway: DiagnosticGateway | None = None,
+    course_repository: CourseRepository | None = None,
 ) -> FastAPI:
     config = settings or Settings.from_env()
     selected_provider = provider or build_provider(config)
@@ -57,10 +60,14 @@ def create_app(
         token=config.diagnostic_token,
         timeout_seconds=config.tool_timeout_seconds,
     )
+    selected_course_repository = course_repository or CourseRepository(
+        config.course_directory
+    )
     orchestrator = AgentOrchestrator(
         settings=config,
         provider=selected_provider,
         gateway=selected_gateway,
+        course_repository=selected_course_repository,
     )
     request_slots = asyncio.Semaphore(config.max_concurrent_requests)
 
@@ -120,6 +127,7 @@ def create_app(
             "status": "ready",
             "provider": config.model_provider,
             "diagnostic_gateway_configured": True,
+            "processed_courses": selected_course_repository.course_count,
         }
 
     @app.post(
@@ -141,5 +149,6 @@ def create_app(
     app.state.settings = config
     app.state.provider = selected_provider
     app.state.gateway = selected_gateway
+    app.state.course_repository = selected_course_repository
     app.state.orchestrator = orchestrator
     return app

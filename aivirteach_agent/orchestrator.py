@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .config import Settings
+from .course_repository import CourseRepository
 from .gateway import DiagnosticGateway, GatewayError
 from .models import (
     AnswerDraft,
@@ -39,12 +40,16 @@ class AgentOrchestrator:
         settings: Settings,
         provider: ModelProvider,
         gateway: DiagnosticGateway,
+        course_repository: CourseRepository | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
         self._gateway = gateway
+        self._course_repository = course_repository
 
     async def diagnose(self, request: DiagnoseRequest) -> DiagnoseResponse:
+        if self._course_repository is not None:
+            request = self._course_repository.enrich(request)
         evidence: list[Evidence] = []
         traces: list[ToolTrace] = []
         limitations: list[str] = []
@@ -288,7 +293,33 @@ def _parse_draft(text: str) -> AnswerDraft:
         cleaned = cleaned[7:-3].strip()
     elif cleaned.startswith("```") and cleaned.endswith("```"):
         cleaned = cleaned[3:-3].strip()
-    return AnswerDraft.model_validate(json.loads(cleaned))
+
+    decoder = json.JSONDecoder()
+    validation_error: ValidationError | None = None
+    for offset, character in enumerate(cleaned):
+        if character != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(cleaned[offset:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        # Some compatible providers return a single limitation as a string
+        # even when explicitly asked for an array. Normalize only this safe,
+        # common shape; the rest of the response remains strictly validated.
+        if isinstance(payload.get("limitations"), str):
+            limitation = payload["limitations"].strip()
+            payload["limitations"] = [limitation] if limitation else []
+        try:
+            return AnswerDraft.model_validate(payload)
+        except ValidationError as exc:
+            validation_error = exc
+
+    if validation_error is not None:
+        raise validation_error
+    raise json.JSONDecodeError("No valid JSON object found", cleaned, 0)
 
 
 def _tool_message(call_id: str, payload: dict[str, Any]) -> ProviderMessage:

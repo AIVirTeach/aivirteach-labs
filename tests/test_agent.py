@@ -6,11 +6,18 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from aivirteach_agent.app import create_app
+from aivirteach_agent.app import build_provider, create_app
 from aivirteach_agent.config import Settings
 from aivirteach_agent.models import DiagnoseRequest, ToolName
-from aivirteach_agent.orchestrator import AgentOrchestrator
-from aivirteach_agent.providers import FakeProvider, ProviderToolCall, ProviderTurn
+from aivirteach_agent.orchestrator import AgentOrchestrator, _parse_draft
+from aivirteach_agent.providers import (
+    FakeProvider,
+    OpenAICompatibleProvider,
+    ProviderMessage,
+    ProviderTool,
+    ProviderToolCall,
+    ProviderTurn,
+)
 from aivirteach_agent.security import sanitize_value
 from aivirteach_agent.tools import ToolPolicyError, validate_tool_call
 
@@ -289,6 +296,102 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertGreaterEqual(count, 1)
         self.assertNotIn("hunter2", str(cleaned))
+
+
+class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_thinking_mode_is_sent_to_provider(self) -> None:
+        captured: dict[str, Any] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = OpenAICompatibleProvider(
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model="test-model",
+            timeout_seconds=2,
+            thinking="disabled",
+            client=client,
+        )
+        try:
+            response = await provider.complete(
+                messages=(ProviderMessage(role="user", content="hello"),),
+                tools=(
+                    ProviderTool(
+                        name="inspect",
+                        description="Inspect state",
+                        input_schema={"type": "object", "properties": {}},
+                    ),
+                ),
+            )
+        finally:
+            await client.aclose()
+
+        self.assertEqual(response.text, "ok")
+        self.assertEqual(captured["thinking"], {"type": "disabled"})
+        self.assertEqual(captured["tool_choice"], "auto")
+
+    def test_build_provider_forwards_thinking_setting(self) -> None:
+        provider = build_provider(
+            settings(
+                model_provider="openai_compatible",
+                model_base_url="https://provider.example/v1",
+                model_api_key="secret",
+                model_name="test-model",
+                model_thinking="disabled",
+            )
+        )
+        self.assertIsInstance(provider, OpenAICompatibleProvider)
+        self.assertEqual(provider._thinking, "disabled")
+
+    def test_invalid_thinking_setting_fails_readiness(self) -> None:
+        errors = settings(
+            model_provider="openai_compatible",
+            model_base_url="https://provider.example/v1",
+            model_api_key="secret",
+            model_name="test-model",
+            model_thinking="sometimes",
+        ).readiness_errors()
+        self.assertIn(
+            "AIVIRTEACH_MODEL_THINKING must be enabled or disabled", errors
+        )
+
+
+class ModelOutputParsingTests(unittest.TestCase):
+    def test_extracts_valid_answer_after_provider_preamble(self) -> None:
+        draft = _parse_draft(
+            "I have enough evidence.\n\n"
+            + json.dumps(
+                {
+                    "answer": "虚拟机运行正常。",
+                    "diagnosis": {
+                        "summary": "状态正常",
+                        "probable_causes": [],
+                        "confidence": "high",
+                    },
+                    "course_alignment": {"expected": [], "observed": []},
+                    "evidence_ids": ["obs-001"],
+                    "suggested_actions": [],
+                    "limitations": "未检查应用端口。",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        self.assertEqual(draft.answer, "虚拟机运行正常。")
+        self.assertEqual(draft.limitations, ["未检查应用端口。"])
 
 
 if __name__ == "__main__":

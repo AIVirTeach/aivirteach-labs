@@ -1,0 +1,11 @@
+**
+!.dockerignore
+!requirements.txt
+!service.py
+!libvirt/
+!libvirt/config/
+!libvirt/config/**
+!libvirt/scripts/
+!libvirt/scripts/**
+!guacamole/
+!guacamole/vm-manager.Dockerfile

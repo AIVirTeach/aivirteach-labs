@@ -121,8 +121,10 @@ async def _run_host(argv: list[str], timeout_seconds: int = COMMAND_TIMEOUT_SECO
 
 
 def _virsh_argv(*arguments: str) -> list[str]:
-    argv = ["virsh", "--connect", "qemu:///system", *arguments]
-    return argv if os.geteuid() == 0 else ["sudo", "-n", *argv]
+    # libvirt authorizes access through its Unix socket. A service account in
+    # the libvirt group can therefore use the system connection directly and
+    # does not need passwordless sudo for every read-only diagnostic command.
+    return ["virsh", "--connect", "qemu:///system", *arguments]
 
 
 async def _virsh(*arguments: str) -> str:

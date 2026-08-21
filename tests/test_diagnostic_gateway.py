@@ -59,6 +59,12 @@ class DiagnosticGatewayApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
         ensure.assert_not_awaited()
 
+    def test_virsh_uses_the_libvirt_socket_without_sudo(self) -> None:
+        self.assertEqual(
+            diagnostics._virsh_argv("dominfo", "lab-001"),
+            ["virsh", "--connect", "qemu:///system", "dominfo", "lab-001"],
+        )
+
 
 class GuestExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_guest_exec_uses_fixed_qga_payload_and_decodes_output(self) -> None:

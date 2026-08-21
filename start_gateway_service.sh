@@ -13,8 +13,8 @@ PYTHON_BIN="${AIVIRTEACH_PYTHON:-${PROJECT_DIR}/.venv/bin/python}"
   echo "ERROR: Python environment not found: $PYTHON_BIN" >&2
   exit 1
 }
-if [[ $EUID -ne 0 ]] && ! sudo -n true >/dev/null 2>&1; then
-  echo "ERROR: Run the gateway as root or configure passwordless sudo." >&2
+if ! virsh --connect qemu:///system list --all >/dev/null 2>&1; then
+  echo "ERROR: Cannot access qemu:///system. Run as root or add this user to the libvirt group, then log in again." >&2
   exit 1
 fi
 [[ "$DIAGNOSTIC_PORT" =~ ^[0-9]+$ ]] && (( DIAGNOSTIC_PORT >= 1 && DIAGNOSTIC_PORT <= 65535 )) || {

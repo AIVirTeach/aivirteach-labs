@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
+import ipaddress
+import json
 import os
 import re
 import signal
+import time
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from cryptography.hazmat.primitives import hashes, hmac as crypto_hmac, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -22,6 +28,13 @@ LIBVIRT_DIR = Path(
 VM_CONTROL_SCRIPT = LIBVIRT_DIR / "scripts" / "vm-control.sh"
 CREATE_VM_SCRIPT = LIBVIRT_DIR / "scripts" / "create-learner-vm.sh"
 LAB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+SENSITIVE_SUBPROCESS_ENV = frozenset(
+    {
+        "AIVIRTEACH_API_TOKEN",
+        "AIVIRTEACH_SESSION_TOKEN",
+        "AIVIRTEACH_GUACAMOLE_JSON_SECRET",
+    }
+)
 
 COMMAND_TIMEOUT_SECONDS = int(os.getenv("AIVIRTEACH_COMMAND_TIMEOUT", "30"))
 CREATE_TIMEOUT_SECONDS = int(os.getenv("AIVIRTEACH_CREATE_TIMEOUT", "180"))
@@ -38,6 +51,12 @@ admin_bearer = HTTPBearer(
     auto_error=False,
     scheme_name="AdminBearer",
     description="AIVIRTEACH_API_TOKEN — VM lifecycle and credentials.",
+)
+
+session_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="SessionBearer",
+    description="AIVIRTEACH_SESSION_TOKEN — mint short-lived browser RDP sessions.",
 )
 
 
@@ -61,6 +80,17 @@ class OperationResponse(BaseModel):
     message: str
 
 
+class BrowserSessionRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._@-]+$")
+
+
+class BrowserSessionResponse(BaseModel):
+    lab_id: str
+    state: str
+    data: str | None = None
+    expires_at: int | None = None
+
+
 def _validate_lab_id(lab_id: str) -> str:
     if not LAB_ID_RE.fullmatch(lab_id):
         raise HTTPException(
@@ -80,6 +110,10 @@ def _lab_lock(lab_id: str) -> asyncio.Lock:
 
 def _api_token() -> str:
     return os.getenv("AIVIRTEACH_API_TOKEN", "")
+
+
+def _session_token() -> str:
+    return os.getenv("AIVIRTEACH_SESSION_TOKEN", "")
 
 
 def _verify_script_layout() -> None:
@@ -114,6 +148,37 @@ async def require_api_token(
         )
 
 
+async def require_session_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(session_bearer)
+    ],
+) -> None:
+    expected = _session_token()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_SESSION_TOKEN is not configured.",
+        )
+
+    admin_token = _api_token()
+    if admin_token and hmac.compare_digest(expected, admin_token):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_SESSION_TOKEN must differ from AIVIRTEACH_API_TOKEN.",
+        )
+
+    if (
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not hmac.compare_digest(credentials.credentials, expected)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def _error_status(output: str) -> int:
     lowered = output.lower()
     if "vm not found" in lowered or "domain not found" in lowered:
@@ -131,6 +196,8 @@ async def run_script(
     timeout_seconds: int = COMMAND_TIMEOUT_SECONDS,
 ) -> str:
     env = os.environ.copy()
+    for name in SENSITIVE_SUBPROCESS_ENV:
+        env.pop(name, None)
     env["AIVIRTEACH_NONINTERACTIVE"] = "true"
 
     process = await asyncio.create_subprocess_exec(
@@ -178,6 +245,117 @@ def _parse_key_value_lines(output: str, separator: str = "=") -> dict[str, str]:
 
 def _parse_dominfo(output: str) -> dict[str, str]:
     return _parse_key_value_lines(output, separator=":")
+
+
+async def _rdp_ready(ip_address: str, port: int) -> bool:
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip_address, port), timeout=1.5
+        )
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    await writer.wait_closed()
+    return True
+
+
+def _rdp_allowed_networks() -> list[
+    ipaddress.IPv4Network | ipaddress.IPv6Network
+]:
+    try:
+        networks = [
+            ipaddress.ip_network(item.strip())
+            for item in os.getenv(
+                "AIVIRTEACH_RDP_ALLOWED_CIDRS", "192.168.122.0/24"
+            ).split(",")
+            if item.strip()
+        ]
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_RDP_ALLOWED_CIDRS is invalid.",
+        ) from error
+    if not networks:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_RDP_ALLOWED_CIDRS is invalid.",
+        )
+    return networks
+
+
+def _validate_rdp_ip(
+    value: str,
+    allowed_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The VM manager returned an invalid RDP network address.",
+        ) from error
+
+    if not any(address in network for network in allowed_networks):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The VM RDP address is outside the configured lab networks.",
+        )
+    return str(address)
+
+
+def _guacamole_secret() -> bytes:
+    value = os.getenv("AIVIRTEACH_GUACAMOLE_JSON_SECRET", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", value):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_GUACAMOLE_JSON_SECRET is not configured.",
+        )
+    return bytes.fromhex(value)
+
+
+def _browser_session_ttl() -> int:
+    try:
+        configured = int(os.getenv("AIVIRTEACH_BROWSER_SESSION_TTL", "60"))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AIVIRTEACH_BROWSER_SESSION_TTL must be an integer.",
+        ) from error
+    return min(120, max(15, configured))
+
+
+def _parse_rdp_credentials(output: str) -> tuple[str, str, int]:
+    credentials = _parse_key_value_lines(output)
+    username = credentials.get("username", "learner")
+    password = credentials.get("password", "")
+    try:
+        rdp_port = int(credentials.get("rdp_port", "3389"))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RDP credentials are unavailable.",
+        ) from error
+
+    if not username or not password or rdp_port != 3389:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RDP credentials are unavailable.",
+        )
+    return username, password, rdp_port
+
+
+def _encrypt_guacamole_payload(payload: dict[str, object]) -> str:
+    key = _guacamole_secret()
+    plaintext = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    signer = crypto_hmac.HMAC(key, hashes.SHA256())
+    signer.update(plaintext)
+    signed = signer.finalize() + plaintext
+
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(signed) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(bytes(16))).encryptor()
+    encrypted = encryptor.update(padded) + encryptor.finalize()
+    return base64.b64encode(encrypted).decode("ascii")
 
 
 @app.on_event("startup")
@@ -273,6 +451,76 @@ async def vm_credentials(lab_id: str) -> dict[str, str | int]:
     if "rdp_port" in parsed:
         parsed["rdp_port"] = int(parsed["rdp_port"])
     return parsed
+
+
+@app.post(
+    "/v1/vms/{lab_id}/browser-sessions",
+    response_model=BrowserSessionResponse,
+    dependencies=[Depends(require_session_token)],
+    tags=["workspace"],
+)
+async def create_browser_session(
+    lab_id: str, request: BrowserSessionRequest, response: Response
+) -> BrowserSessionResponse:
+    """Start an assigned VM and mint a short-lived opaque Guacamole ticket."""
+
+    lab_id = _validate_lab_id(lab_id)
+    response.headers["Cache-Control"] = "no-store"
+    ttl_seconds = _browser_session_ttl()
+    _guacamole_secret()
+    allowed_networks = _rdp_allowed_networks()
+
+    async with _lab_lock(lab_id):
+        output = await run_script([VM_CONTROL_SCRIPT, "status", lab_id])
+        vm_state = _parse_dominfo(output).get("State", "unknown").strip().lower()
+
+        if vm_state != "running":
+            if vm_state in {"shut off", "shutoff"}:
+                await run_script([VM_CONTROL_SCRIPT, "start", lab_id])
+                return BrowserSessionResponse(lab_id=lab_id, state="starting")
+            return BrowserSessionResponse(
+                lab_id=lab_id, state=vm_state or "unavailable"
+            )
+
+        try:
+            ip_address = await run_script([VM_CONTROL_SCRIPT, "ip", lab_id])
+        except HTTPException as error:
+            if "no ipv4 address" in str(error.detail).lower():
+                return BrowserSessionResponse(lab_id=lab_id, state="starting")
+            raise
+
+        ip_address = _validate_rdp_ip(ip_address, allowed_networks)
+        if not await _rdp_ready(ip_address, 3389):
+            return BrowserSessionResponse(lab_id=lab_id, state="starting")
+
+        username, password, rdp_port = _parse_rdp_credentials(
+            await run_script([VM_CONTROL_SCRIPT, "credentials", lab_id])
+        )
+        expires_at = int(time.time() * 1000) + ttl_seconds * 1000
+        data = _encrypt_guacamole_payload(
+            {
+                "username": request.subject,
+                "expires": expires_at,
+                "connections": {
+                    lab_id: {
+                        "protocol": "rdp",
+                        "parameters": {
+                            "hostname": ip_address,
+                            "port": str(rdp_port),
+                            "username": username,
+                            "password": password,
+                            "security": "any",
+                            "ignore-cert": "true",
+                            "resize-method": "display-update",
+                            "enable-wallpaper": "true",
+                        },
+                    }
+                },
+            }
+        )
+        return BrowserSessionResponse(
+            lab_id=lab_id, state="ready", data=data, expires_at=expires_at
+        )
 
 
 @app.post(

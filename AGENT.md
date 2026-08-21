@@ -15,6 +15,12 @@ The Agent never receives `AIVIRTEACH_API_TOKEN`, VM credentials, a shell tool,
 or lifecycle operations. Diagnostic commands are fixed argv templates executed
 through QEMU Guest Agent; there is no SSH requirement and no `shell=True` path.
 
+Processed course retrieval defaults to
+`.cache/course/AI Daily Briefing/processed`. Set `AIVIRTEACH_COURSE_DIR` to move
+it. The server-provided course and lesson IDs select a record; stored content
+enriches the prompt but never broadens `diagnostic_scope`. Rebuild the documents
+after changing raw course content with `.venv/bin/python scripts/process_course.py`.
+
 ## Start locally
 
 Install the existing Python dependencies once:
@@ -25,12 +31,12 @@ python3 -m venv .venv
 ```
 
 Generate separate administration, diagnostic, and Agent tokens. Start the
-Diagnostic Gateway first:
+Diagnostic Gateway first. The current user must be able to access
+`qemu:///system` (normally by belonging to the `libvirt` group):
 
 ```bash
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
-sudo --preserve-env=AIVIRTEACH_DIAGNOSTIC_TOKEN \
-  ./start_gateway_service.sh
+./start_gateway_service.sh
 ```
 
 Start the VM Manager and unified docs separately:
