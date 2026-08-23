@@ -43,6 +43,12 @@ validate_lab_id() {
     || die "Invalid lab ID '$lab_id'. Use 1-63 letters, numbers, '.', '_' or '-'."
 }
 
+validate_console_token() {
+  local token="$1"
+  [[ "$token" =~ ^[A-Za-z0-9_-]{1,128}$ ]] \
+    || die "Invalid console token. Use 1-128 base64url characters (letters, numbers, '_' or '-')."
+}
+
 choose_osinfo() {
   local candidate
   for candidate in ubuntu24.04 ubuntu22.04 ubuntu20.04 generic; do

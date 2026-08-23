@@ -11,6 +11,7 @@ ACTION="$1"; LAB_ID="$2"; shift 2
 validate_lab_id "$LAB_ID"
 if [[ "$ACTION" == "register-console-token" ]]; then
   CONSOLE_TOKEN="${1:?Missing token}"
+  validate_console_token "$CONSOLE_TOKEN"
   CONSOLE_TTL_SECONDS="${2:?Missing ttl_seconds}"
   shift 2
 fi
