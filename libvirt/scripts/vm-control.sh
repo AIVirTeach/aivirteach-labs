@@ -5,10 +5,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
-usage() { echo "Usage: $0 {start|stop|force-stop|reboot|status|ip|vnc|credentials|delete} LAB_ID [--yes]"; }
+usage() { echo "Usage: $0 {start|stop|force-stop|reboot|status|ip|vnc|credentials|register-console-token|delete} LAB_ID [--yes]"; }
 [[ $# -ge 2 ]] || { usage; exit 1; }
 ACTION="$1"; LAB_ID="$2"; shift 2
 validate_lab_id "$LAB_ID"
+if [[ "$ACTION" == "register-console-token" ]]; then
+  CONSOLE_TOKEN="${1:?Missing token}"
+  CONSOLE_TTL_SECONDS="${2:?Missing ttl_seconds}"
+  shift 2
+fi
 CONFIRM=false
 [[ "${1:-}" == "--yes" ]] && CONFIRM=true
 require_root_or_sudo
@@ -38,6 +43,21 @@ case "$ACTION" in
     CRED_FILE="${STATE_DIR}/${LAB_ID}/credentials.txt"
     [[ -f "$CRED_FILE" ]] || die "Credential file not found"
     as_root cat "$CRED_FILE"
+    ;;
+  register-console-token)
+    CRED_FILE="${STATE_DIR}/${LAB_ID}/credentials.txt"
+    [[ -f "$CRED_FILE" ]] || die "Credential file not found"
+    RDP_TARGET_PORT="$(grep '^rdp_port=' "$CRED_FILE" | cut -d= -f2)"
+    [[ -n "$RDP_TARGET_PORT" ]] || die "rdp_port not found in credentials file"
+
+    [[ "$DOMAIN_EXISTS" == true ]] || die "VM not found"
+    IP="$(get_vm_ip "$LAB_ID")"
+    [[ -n "$IP" ]] || die "No IPv4 address reported yet."
+
+    as_root install -d -m 0750 -o root -g libvirt "$CONSOLE_TOKEN_DIR"
+    as_root find "$CONSOLE_TOKEN_DIR" -maxdepth 1 -type f -mmin "+$((CONSOLE_TTL_SECONDS / 60))" -delete
+
+    as_root bash -c "umask 077; printf '%s: %s:%s\n' '$CONSOLE_TOKEN' '$IP' '$RDP_TARGET_PORT' > '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'"
     ;;
   delete)
     [[ "$CONFIRM" == true ]] || die "Deletion requires --yes"

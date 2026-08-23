@@ -9,6 +9,7 @@ done
 grep -q 'qemu-kvm' "$ROOT/scripts/install-host.sh"
 grep -q 'cloud-localds' "$ROOT/scripts/build-base-image.sh"
 grep -q 'qemu-img create' "$ROOT/scripts/create-learner-vm.sh"
+grep -q 'register-console-token' "$ROOT/scripts/vm-control.sh"
 grep -q 'xrdp' "$ROOT/scripts/build-base-image.sh"
 grep -q '/var/log/libvirt/qemu/' "$ROOT/scripts/vm-logs.sh"
 echo "Static checks passed."
