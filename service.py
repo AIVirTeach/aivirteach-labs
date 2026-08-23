@@ -55,6 +55,11 @@ class CreateVMRequest(BaseModel):
     autostart: bool = False
 
 
+class ConsoleTokenRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=128)
+    ttl_seconds: int = Field(ge=1, le=3600)
+
+
 class OperationResponse(BaseModel):
     lab_id: str
     operation: str
@@ -273,6 +278,25 @@ async def vm_credentials(lab_id: str) -> dict[str, str | int]:
     if "rdp_port" in parsed:
         parsed["rdp_port"] = int(parsed["rdp_port"])
     return parsed
+
+
+@app.post(
+    "/v1/vms/{lab_id}/console-token",
+    dependencies=[Depends(require_api_token)],
+    tags=["vms"],
+)
+async def register_console_token(lab_id: str, request: ConsoleTokenRequest) -> dict[str, str | bool]:
+    lab_id = _validate_lab_id(lab_id)
+    await run_script(
+        [
+            VM_CONTROL_SCRIPT,
+            "register-console-token",
+            lab_id,
+            request.token,
+            str(request.ttl_seconds),
+        ]
+    )
+    return {"lab_id": lab_id, "registered": True}
 
 
 @app.post(

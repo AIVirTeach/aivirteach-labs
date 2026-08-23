@@ -54,6 +54,23 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
             {"lab_id": "lab-001", "ip_address": "192.168.122.210"},
         )
 
+    async def test_register_console_token_calls_script_with_correct_argv(self) -> None:
+        runner = AsyncMock(return_value="")
+        with patch.object(service, "run_script", runner):
+            response = await self.client.post(
+                "/v1/vms/lab-001/console-token",
+                headers=self.auth,
+                json={"token": "abc123", "ttl_seconds": 300},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"lab_id": "lab-001", "registered": True})
+        argv = runner.await_args.args[0]
+        self.assertEqual(
+            [str(item) for item in argv],
+            [str(service.VM_CONTROL_SCRIPT), "register-console-token", "lab-001", "abc123", "300"],
+        )
+
     async def test_create_uses_target_repository_scripts(self) -> None:
         runner = AsyncMock(
             return_value=(
