@@ -58,7 +58,7 @@ case "$ACTION" in
     as_root install -d -m 0750 -o root -g libvirt "$CONSOLE_TOKEN_DIR"
     as_root find "$CONSOLE_TOKEN_DIR" -maxdepth 1 -type f -mmin "+$((CONSOLE_TTL_SECONDS / 60))" -delete
 
-    as_root bash -c "umask 077; printf '%s: %s:%s\n' '$CONSOLE_TOKEN' '$IP' '$RDP_TARGET_PORT' > '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'"
+    as_root bash -c "umask 027; printf '%s: %s:%s\n' '$CONSOLE_TOKEN' '$IP' '$RDP_TARGET_PORT' > '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'; chgrp libvirt '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'"
     ;;
   delete)
     [[ "$CONFIRM" == true ]] || die "Deletion requires --yes"
