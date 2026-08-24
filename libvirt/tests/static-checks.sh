@@ -6,6 +6,7 @@ for script in "$ROOT"/scripts/*.sh; do
   bash -n "$script"
 done
 "$ROOT/../tests/test_vm_logs.sh"
+"$ROOT/../tests/test_common.sh"
 grep -q 'qemu-kvm' "$ROOT/scripts/install-host.sh"
 grep -q 'cloud-localds' "$ROOT/scripts/build-base-image.sh"
 grep -q 'qemu-img create' "$ROOT/scripts/create-learner-vm.sh"

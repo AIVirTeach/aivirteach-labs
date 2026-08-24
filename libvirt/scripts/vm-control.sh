@@ -56,9 +56,24 @@ case "$ACTION" in
     [[ -n "$IP" ]] || die "No IPv4 address reported yet."
 
     as_root install -d -m 0750 -o root -g libvirt "$CONSOLE_TOKEN_DIR"
+    # NOTE: this cleanup is directory-wide (every token under $CONSOLE_TOKEN_DIR), but keyed
+    # to *this* request's CONSOLE_TTL_SECONDS, not each token's own recorded TTL. All callers
+    # of register-console-token MUST pass the same ttl_seconds value, or a shorter-TTL caller
+    # will prematurely delete other callers' still-valid, longer-TTL tokens -- there is no
+    # per-file expiry tracking and, by design, no separate cron cleanup job. The only current
+    # caller (aivirteach-server, CONSOLE_TOKEN_TTL_SECONDS=300) satisfies this today, but the
+    # API contract (ConsoleTokenRequest.ttl_seconds, ge=1/le=3600 in service.py) does not
+    # itself enforce a single shared value across callers.
     as_root find "$CONSOLE_TOKEN_DIR" -maxdepth 1 -type f -mmin "+$((CONSOLE_TTL_SECONDS / 60))" -delete
 
-    as_root bash -c "umask 027; printf '%s: %s:%s\n' '$CONSOLE_TOKEN' '$IP' '$RDP_TARGET_PORT' > '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'; chgrp libvirt '${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}'"
+    # $IP comes from get_vm_ip(), which queries the QEMU Guest Agent running inside the
+    # student's own VM -- students have root in-VM, so this value is attacker-controlled.
+    # $RDP_TARGET_PORT is operator-controlled (credentials.txt) but is passed the same way
+    # for consistency. Pass everything as positional parameters to the nested shell so no
+    # value's content can ever be re-interpreted as shell syntax (no string interpolation
+    # into the bash -c script itself).
+    as_root bash -c 'umask 027; printf "%s: %s:%s\n" "$1" "$2" "$3" > "$4"; chgrp libvirt "$4"' \
+      _ "$CONSOLE_TOKEN" "$IP" "$RDP_TARGET_PORT" "${CONSOLE_TOKEN_DIR}/${CONSOLE_TOKEN}"
     ;;
   delete)
     [[ "$CONFIRM" == true ]] || die "Deletion requires --yes"
