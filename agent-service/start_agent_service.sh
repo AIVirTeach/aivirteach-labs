@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "${SERVICE_DIR}/.." && pwd)"
 
 : "${AIVIRTEACH_AGENT_TOKEN:?Set AIVIRTEACH_AGENT_TOKEN before starting the agent}"
 : "${AIVIRTEACH_DIAGNOSTIC_TOKEN:?Set AIVIRTEACH_DIAGNOSTIC_TOKEN before starting the agent}"
@@ -24,5 +25,6 @@ if [[ "${AIVIRTEACH_MODEL_PROVIDER:-fake}" == "openai_compatible" ]]; then
   : "${AIVIRTEACH_MODEL_NAME:?Set AIVIRTEACH_MODEL_NAME}"
 fi
 
-cd "$PROJECT_DIR"
+export PYTHONPATH="${SERVICE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+cd "$SERVICE_DIR"
 exec "$PYTHON_BIN" -m uvicorn agent_service:app --host "$AGENT_HOST" --port "$AGENT_PORT"

@@ -17,6 +17,7 @@ from typing import Annotated
 from cryptography.hazmat.primitives import hashes, hmac as crypto_hmac, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -39,10 +40,25 @@ SENSITIVE_SUBPROCESS_ENV = frozenset(
 COMMAND_TIMEOUT_SECONDS = int(os.getenv("AIVIRTEACH_COMMAND_TIMEOUT", "30"))
 CREATE_TIMEOUT_SECONDS = int(os.getenv("AIVIRTEACH_CREATE_TIMEOUT", "180"))
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv(
+        "AIVIRTEACH_VM_CORS_ORIGINS",
+        "http://127.0.0.1:8780,http://localhost:8780",
+    )
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+
 app = FastAPI(
     title="AIVirTeach VM Manager",
     version="1.0.0",
     description="A restricted HTTP interface for the AIVirTeach libvirt scripts.",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 _lab_locks: dict[str, asyncio.Lock] = {}

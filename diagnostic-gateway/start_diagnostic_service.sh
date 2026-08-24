@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "${SERVICE_DIR}/.." && pwd)"
 
 : "${AIVIRTEACH_DIAGNOSTIC_TOKEN:?Set AIVIRTEACH_DIAGNOSTIC_TOKEN before starting the diagnostic gateway}"
 
@@ -22,5 +23,6 @@ fi
   exit 1
 }
 
-cd "$PROJECT_DIR"
+export PYTHONPATH="${SERVICE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+cd "$SERVICE_DIR"
 exec "$PYTHON_BIN" -m uvicorn gateway_service:app --host "$DIAGNOSTIC_HOST" --port "$DIAGNOSTIC_PORT"

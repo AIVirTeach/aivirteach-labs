@@ -1,25 +1,27 @@
 # AIVirTeach troubleshooting agent
 
-This repository contains three separate service boundaries:
+This repository contains four separate service boundaries:
 
-- `docs_gateway_service.py` runs with libvirt privileges on port 8760. It exposes
-  VM lifecycle operations under `AIVIRTEACH_API_TOKEN` and one unified Swagger
-  document, but it does not execute Diagnostic or Agent operations.
-- `gateway_service.py` runs with libvirt privileges on port 8765. It exposes only
+- `vm-manager/service.py` runs with libvirt privileges on port 8760. It exposes
+  only VM lifecycle operations under `AIVIRTEACH_API_TOKEN`.
+- `diagnostic-gateway/gateway_service.py` runs with libvirt privileges on port 8765. It exposes only
   fixed, read-only diagnostic operations under `AIVIRTEACH_DIAGNOSTIC_TOKEN`.
-- `agent_service.py` runs as an unprivileged account on port 8770. It receives a
+- `agent-service/agent_service.py` runs as an unprivileged account on port 8770. It receives a
   normalized course-step snapshot from `aivirteach-server`, asks a replaceable
   model provider what evidence is needed, and calls only port 8765.
+- `docs-service/docs_service.py` runs without service tokens on port 8780. It
+  fetches each service's OpenAPI document over HTTP and serves self-hosted
+  Swagger assets; it never mounts or proxies runtime operations.
 
 The Agent never receives `AIVIRTEACH_API_TOKEN`, VM credentials, a shell tool,
 or lifecycle operations. Diagnostic commands are fixed argv templates executed
 through QEMU Guest Agent; there is no SSH requirement and no `shell=True` path.
 
 Processed course retrieval defaults to
-`.cache/course/AI Daily Briefing/processed`. Set `AIVIRTEACH_COURSE_DIR` to move
+`agent-service/.cache/course/AI Daily Briefing/processed`. Set `AIVIRTEACH_COURSE_DIR` to move
 it. The server-provided course and lesson IDs select a record; stored content
 enriches the prompt but never broadens `diagnostic_scope`. Rebuild the documents
-after changing raw course content with `.venv/bin/python scripts/process_course.py`.
+after changing raw course content with `.venv/bin/python agent-service/scripts/process_course.py`.
 
 ## Start locally
 
@@ -36,16 +38,15 @@ Diagnostic Gateway first. The current user must be able to access
 
 ```bash
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
-./start_gateway_service.sh
+./diagnostic-gateway/start_diagnostic_service.sh
 ```
 
-Start the VM Manager and unified docs separately:
+Start the VM Manager separately:
 
 ```bash
 export AIVIRTEACH_API_TOKEN="$(openssl rand -hex 32)"
-export AIVIRTEACH_DIAGNOSTIC_DOCS_URL="http://127.0.0.1:8765"
-sudo --preserve-env=AIVIRTEACH_API_TOKEN,AIVIRTEACH_DIAGNOSTIC_DOCS_URL \
-  ./start_service.sh
+sudo --preserve-env=AIVIRTEACH_API_TOKEN \
+  ./vm-manager/start_service.sh
 ```
 
 In another terminal, start the Agent with the same diagnostic token used by
@@ -55,9 +56,15 @@ port 8765 and a different server-to-Agent token:
 export AIVIRTEACH_AGENT_TOKEN="$(openssl rand -hex 32)"
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="the-same-diagnostic-token-as-the-gateway"
 export AIVIRTEACH_GATEWAY_URL="http://127.0.0.1:8765"
-export AIVIRTEACH_AGENT_CORS_ORIGINS="http://127.0.0.1:8760,http://localhost:8760"
+export AIVIRTEACH_AGENT_CORS_ORIGINS="http://127.0.0.1:8780,http://localhost:8780"
 export AIVIRTEACH_MODEL_PROVIDER="fake"
-./start_agent_service.sh
+./agent-service/start_agent_service.sh
+```
+
+Start the standalone unified documentation after the runtime services:
+
+```bash
+./docs-service/start_docs_service.sh
 ```
 
 `fake` validates the HTTP integration but intentionally performs no reasoning.
@@ -68,7 +75,7 @@ export AIVIRTEACH_MODEL_PROVIDER="openai_compatible"
 export AIVIRTEACH_MODEL_BASE_URL="https://provider.example/v1"
 export AIVIRTEACH_MODEL_API_KEY="..."
 export AIVIRTEACH_MODEL_NAME="..."
-./start_agent_service.sh
+./agent-service/start_agent_service.sh
 ```
 
 The model base URL, key, and name are deployment configuration; clients cannot
@@ -83,6 +90,7 @@ curl http://127.0.0.1:8765/health
 curl http://127.0.0.1:8765/ready
 curl http://127.0.0.1:8770/health
 curl http://127.0.0.1:8770/ready
+curl http://127.0.0.1:8780/health
 ```
 
 Diagnosis endpoint:

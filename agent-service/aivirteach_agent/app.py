@@ -29,7 +29,7 @@ agent_bearer = HTTPBearer(
 def _cors_origins() -> list[str]:
     raw = os.getenv(
         "AIVIRTEACH_AGENT_CORS_ORIGINS",
-        "http://127.0.0.1:8760,http://localhost:8760",
+        "http://127.0.0.1:8780,http://localhost:8780",
     )
     return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 

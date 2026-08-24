@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd -- "${SERVICE_DIR}/.." && pwd)"
 
 : "${AIVIRTEACH_API_TOKEN:?Set AIVIRTEACH_API_TOKEN before starting the API}"
 
@@ -25,5 +26,6 @@ fi
   exit 1
 }
 
-cd "$PROJECT_DIR"
-exec "$PYTHON_BIN" -m uvicorn docs_gateway_service:app --host "$API_HOST" --port "$API_PORT"
+export PYTHONPATH="${SERVICE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+cd "$SERVICE_DIR"
+exec "$PYTHON_BIN" -m uvicorn service:app --host "$API_HOST" --port "$API_PORT"

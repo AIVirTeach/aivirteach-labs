@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
-source "$ROOT/libvirt/scripts/common.sh"
+source "$ROOT/vm-manager/libvirt/scripts/common.sh"
 
 as_root() {
   [[ " $* " == *" domifaddr expected-vm "* ]] || return 1

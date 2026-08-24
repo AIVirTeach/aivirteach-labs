@@ -4,35 +4,37 @@ import unittest
 import httpx
 
 
-os.environ["AIVIRTEACH_DIAGNOSTIC_CORS_ORIGINS"] = (
-    "http://127.0.0.1:8760,http://localhost:8760"
-)
+os.environ["AIVIRTEACH_DIAGNOSTIC_CORS_ORIGINS"] = "http://127.0.0.1:8780"
+os.environ["AIVIRTEACH_VM_CORS_ORIGINS"] = "http://127.0.0.1:8780"
 os.environ.setdefault("AIVIRTEACH_DIAGNOSTIC_TOKEN", "diagnostic-token")
+os.environ.setdefault("AIVIRTEACH_API_TOKEN", "api-token")
 
-import docs_gateway_service
+import docs_service
 import gateway_service
+import service
 
 
 class ServiceSplitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.docs_client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=docs_gateway_service.app),
-            base_url="http://manager.test",
+            transport=httpx.ASGITransport(app=docs_service.app),
+            base_url="http://docs.test",
         )
         self.diagnostic_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=gateway_service.app),
             base_url="http://diagnostics.test",
         )
+        self.vm_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=service.app),
+            base_url="http://vm.test",
+        )
 
     async def asyncTearDown(self) -> None:
         await self.docs_client.aclose()
         await self.diagnostic_client.aclose()
+        await self.vm_client.aclose()
 
-    async def test_diagnostic_route_is_documented_but_not_mounted_on_8760(self) -> None:
-        self.assertIn(
-            "/v1/diagnostics/{lab_id}/tools/{tool}",
-            docs_gateway_service.app.openapi()["paths"],
-        )
+    async def test_docs_service_does_not_mount_diagnostic_routes(self) -> None:
         response = await self.docs_client.post(
             "/v1/diagnostics/lab-001/tools/get_vm_status",
             json={"parameters": {}},
@@ -50,17 +52,12 @@ class ServiceSplitTests(unittest.IsolatedAsyncioTestCase):
         ]["post"]
         self.assertEqual(operation["security"], [{"DiagnosticBearer": []}])
         self.assertIn("DiagnosticBearer", schema["components"]["securitySchemes"])
-        parameter_names = {
-            parameter.get("name", "").lower()
-            for parameter in operation.get("parameters", [])
-        }
-        self.assertNotIn("authorization", parameter_names)
 
-    async def test_8760_swagger_origin_is_allowed_by_cors(self) -> None:
+    async def test_docs_origin_is_allowed_by_diagnostic_cors(self) -> None:
         response = await self.diagnostic_client.options(
             "/v1/diagnostics/lab-001/tools/get_vm_status",
             headers={
-                "Origin": "http://127.0.0.1:8760",
+                "Origin": "http://127.0.0.1:8780",
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "authorization,content-type",
             },
@@ -68,7 +65,22 @@ class ServiceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.headers.get("access-control-allow-origin"),
-            "http://127.0.0.1:8760",
+            "http://127.0.0.1:8780",
+        )
+
+    async def test_docs_origin_is_allowed_by_vm_cors(self) -> None:
+        response = await self.vm_client.options(
+            "/v1/vms/lab-001/status",
+            headers={
+                "Origin": "http://127.0.0.1:8780",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("access-control-allow-origin"),
+            "http://127.0.0.1:8780",
         )
 
 

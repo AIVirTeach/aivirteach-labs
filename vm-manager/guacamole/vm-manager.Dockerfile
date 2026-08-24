@@ -9,9 +9,9 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN uv pip install --system --no-cache --requirement requirements.txt
 
-COPY service.py ./service.py
-COPY libvirt/config ./libvirt/config
-COPY libvirt/scripts ./libvirt/scripts
+COPY vm-manager/service.py ./service.py
+COPY vm-manager/libvirt/config ./libvirt/config
+COPY vm-manager/libvirt/scripts ./libvirt/scripts
 
 EXPOSE 8760
 

@@ -1,8 +1,8 @@
 services:
   vm-manager:
     build:
-      context: ..
-      dockerfile: guacamole/vm-manager.Dockerfile
+      context: ../..
+      dockerfile: vm-manager/guacamole/vm-manager.Dockerfile
     restart: unless-stopped
     cap_drop:
       - ALL

@@ -95,7 +95,7 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.cors_environment = patch.dict(
             os.environ,
-            {"AIVIRTEACH_AGENT_CORS_ORIGINS": "http://127.0.0.1:8760"},
+            {"AIVIRTEACH_AGENT_CORS_ORIGINS": "http://127.0.0.1:8780"},
         )
         self.cors_environment.start()
         self.addCleanup(self.cors_environment.stop)
@@ -126,7 +126,7 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.options(
             "/v1/agent/diagnose",
             headers={
-                "Origin": "http://127.0.0.1:8760",
+                "Origin": "http://127.0.0.1:8780",
                 "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "authorization,content-type",
             },
@@ -134,7 +134,7 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.headers.get("access-control-allow-origin"),
-            "http://127.0.0.1:8760",
+            "http://127.0.0.1:8780",
         )
 
     async def test_agent_openapi_uses_standard_bearer_scheme(self) -> None:
