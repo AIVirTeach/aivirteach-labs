@@ -186,6 +186,10 @@ docker compose ps
 
 开发环境由 client 将同源路径 `/guacamole` 代理到 `http://127.0.0.1:8080`。server 只把 learner 映射到可信 `lab_id`，浏览器不会收到虚拟机明文 IP 或 RDP 密码。
 
+Tauri 桌面版也使用同一条 Guacamole 链路：桌面壳加载已部署的 React Workspace，生产入口必须在同一个 HTTPS Origin 下把 `/guacamole/` 反向代理到这里的 `127.0.0.1:8080/guacamole/`，并保留 HTTP/1.1 WebSocket Upgrade、关闭 buffering、设置长连接 timeout。不要公开 8760、guacd 4822 或 VM 3389，也不要把 `LABS_SESSION_TOKEN` 或 `GUACAMOLE_JSON_SECRET` 打进桌面安装包。
+
+安全检查：当前 Compose 配置还包含浏览器会话以外的高权限 Token 注入，且旧版本可能曾把值直接写进受版本控制文件。生产重启前要先确认哪些管理接口仍在使用它们，把需要保留的值迁移到不提交 Git 的 `.env`/secret store，并轮换所有曾进入 Git 或日志的 Token。不要只删除文件中的一行就假设旧值已失效。
+
 ## 查看虚拟机日志
 
 `vm-manager/libvirt/scripts/vm-logs.sh` 用于读取指定虚拟机在宿主机上的 QEMU/libvirt 日志或相关 systemd journal。它不会进入虚拟机内部读取 guest OS 日志。

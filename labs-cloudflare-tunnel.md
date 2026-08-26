@@ -1,5 +1,33 @@
 # Labs Cloudflare Tunnel 部署清单
 
+> **路径状态（2026-08-26）**：下方原清单描述的是 `IronRDP + websockify` 的旧功能分支，不是当前
+> `local-demo` / `vm_agent_local` 上采用的桌面方案。当前第一版已经改为
+> `Tauri → 已部署 React Workspace → 同源 /guacamole/ → guacd → VM:3389`，不需要 websockify、
+> `LABS_CONSOLE_WS_URL` 或浏览器直连 Labs Console hostname。新部署请先按下一节操作；原第 1a、2、
+> 5a、6 节只保留作旧分支参考，不要和 Guacamole 路径混装。
+
+## 0. 当前 Tauri + Guacamole 部署路径
+
+1. 在 `vm-manager/guacamole/` 从 `.env.example` 创建权限为 600 的 `.env`，分别生成
+   `GUACAMOLE_JSON_SECRET` 和 `AIVIRTEACH_SESSION_TOKEN`，然后运行 `docker compose up -d --build`。
+2. Server 配置 `LABS_API_BASE_URL`、与 Labs 相同的 `LABS_SESSION_TOKEN`、`LEARNER_LAB_MAP` 和
+   `GUACAMOLE_PUBLIC_PATH=/guacamole/`。8760 保持 loopback/私网，不经浏览器访问。
+3. 对外的 React hostname 必须按 path 将 `/guacamole/` 代理到 Labs Guacamole Web 8080；保留
+   HTTP/1.1 `Upgrade`/`Connection`、关闭 buffering，并为 WebSocket 设置长 timeout。对外不要开放
+   8760、4822 或 VM 3389。
+4. 部署 React Workspace 并先在普通浏览器验证课程、session polling、Guacamole 101 WebSocket 和键鼠。
+5. 在 Client 仓库执行：
+
+   ```bash
+   export AIVIRTEACH_DESKTOP_APP_URL=https://learn.<domain>/
+   npm run desktop:build
+   ```
+
+桌面 App 只持有用户登录态和短期 opaque ticket，不持有 Labs/Guacamole/Cloudflare 服务端 Secret。
+完整的开发、构建、Nginx 示例、验证清单和排障步骤见 Client 仓库 `docs/desktop-app.md`。
+
+---
+
 > 面向负责 Cloudflare Tunnel / Access 配置的同事。这里全是 Cloudflare 后台配置 + Labs 主机上装
 > `cloudflared`/`websockify`，不涉及写代码。基于 `aivirteach-server` PR #8（workspace VM 编排）+
 > PR #9（Console/RDP 浏览器接入）和 `aivirteach-labs`/`aivirteach-client` 仓库当前实际代码核对，
