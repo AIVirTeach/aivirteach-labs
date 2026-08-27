@@ -40,6 +40,29 @@ services:
       JSON_SECRET_KEY: "${GUACAMOLE_JSON_SECRET:?Set GUACAMOLE_JSON_SECRET}"
       REMOTE_IP_VALVE_ENABLED: "true"
       API_SESSION_TIMEOUT: "30"
+    networks:
+      - guacamole
+
+  # Apache Guacamole's webapp sends no Access-Control-Allow-Origin header on
+  # any response (confirmed empirically - a Tomcat CorsFilter added via
+  # web.xml gets its headers wiped by Guacamole's Jersey/JAX-RS REST layer
+  # on both success and error responses to /api/*, so that approach doesn't
+  # work here). aivirteach-client's console-viewer.tsx calls
+  # /guacamole/api/tokens directly from the browser, which is cross-origin
+  # and therefore blocked without CORS headers. This proxy sits in front of
+  # `guacamole` and adds them at the HTTP layer instead, independent of how
+  # Guacamole's own webapp builds its responses. It publishes the port that
+  # `guacamole` used to publish directly, so nothing pointing at
+  # localhost:8080 (e.g. an existing cloudflared tunnel) needs to change.
+  guacamole-cors-proxy:
+    image: "nginx:1.27-alpine"
+    restart: unless-stopped
+    depends_on:
+      - guacamole
+    environment:
+      AIVIRTEACH_GUACAMOLE_CORS_ORIGINS: "${AIVIRTEACH_GUACAMOLE_CORS_ORIGINS:?Set AIVIRTEACH_GUACAMOLE_CORS_ORIGINS}"
+    volumes:
+      - ./cors-proxy/docker-entrypoint.d/10-configure-cors.sh:/docker-entrypoint.d/10-configure-cors.sh:ro
     ports:
       - "127.0.0.1:8080:8080"
     networks:
