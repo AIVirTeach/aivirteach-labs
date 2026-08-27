@@ -138,6 +138,8 @@ curl -X POST -H "Authorization: Bearer $AIVIRTEACH_DIAGNOSTIC_TOKEN" \
 
 三个运行时服务默认只允许来自 `http://127.0.0.1:8780` 和 `http://localhost:8780` 的统一文档页面跨端口请求。部署到其他域名时，通过各服务的 `AIVIRTEACH_*_CORS_ORIGINS` 设置精确来源，不要使用通配符。
 
+这里的 CORS 只作用于 8760/8765/8770 的 FastAPI HTTP 接口，主要用于统一 Swagger 页面跨端口执行请求。它不是 Guacamole 8080 的 iframe/WebSocket 配置。正常学习链路由 `aivirteach-server` 在服务端调用 8760，不受浏览器 CORS 限制，因此不要为了远程桌面把 Client 公网 Origin 加进 `AIVIRTEACH_VM_CORS_ORIGINS`，更不要设置成 `*`。
+
 远程开发访问建议保留 loopback 监听，并同时转发文档端口和诊断端口：
 
 ```bash
@@ -159,6 +161,23 @@ ssh -N \
 生产环境应使用 HTTPS 反向代理和防火墙。环境文件分别是 `/etc/aivirteach-labs.env`、`/etc/aivirteach-diagnostics.env`、`/etc/aivirteach-agent.env` 和 `/etc/aivirteach-docs.env`。
 
 ## 浏览器内嵌 RDP（Guacamole）
+
+### 当前架构决定
+
+当前 `local-demo` / `vm_agent_local` 代码统一采用同源 Guacamole 路径，不使用旧 PR 中的 `IronRDP + websockify + labs-console.<domain>` 浏览器直连方案：
+
+```text
+Browser / Tauri
+  └─ https://learn.<domain>/workspace
+      ├─ POST /api/v1/me/lab/session
+      └─ /guacamole/?data=<短期不透明票据>
+           └─ 同源反向代理 / Cloudflare Tunnel
+               └─ Guacamole Web :8080
+                   └─ guacd :4822
+                       └─ VM :3389
+```
+
+Server 返回相对地址 `/guacamole/?data=...`，Client 也只接受这个相对同源合约。当前部署不需要 `LABS_CONSOLE_WS_URL`、websockify 或公开的 `labs-console.<domain>`。如果旧分支仍需要这些组件，应单独维护旧分支文档，不要与这里的 Guacamole 配置混装。
 
 `vm-manager/guacamole/compose.yaml` 会启动三个仅绑定到 loopback 的服务：Guacamole Web（8080）、guacd，以及只负责启动已分配 VM 和签发短期票据的 VM Manager（8760）。guacd 的 4822 端口不会发布到宿主机，VM Manager 容器也不会启用管理员 API。
 
@@ -187,6 +206,52 @@ docker compose ps
 开发环境由 client 将同源路径 `/guacamole` 代理到 `http://127.0.0.1:8080`。server 只把 learner 映射到可信 `lab_id`，浏览器不会收到虚拟机明文 IP 或 RDP 密码。
 
 Tauri 桌面版也使用同一条 Guacamole 链路：桌面壳加载已部署的 React Workspace，生产入口必须在同一个 HTTPS Origin 下把 `/guacamole/` 反向代理到这里的 `127.0.0.1:8080/guacamole/`，并保留 HTTP/1.1 WebSocket Upgrade、关闭 buffering、设置长连接 timeout。不要公开 8760、guacd 4822 或 VM 3389，也不要把 `LABS_SESSION_TOKEN` 或 `GUACAMOLE_JSON_SECRET` 打进桌面安装包。
+
+### Cloudflare Tunnel 开放方式
+
+推荐只给用户开放一个 HTTPS hostname，例如 `learn.example.com`。让该 hostname 先到达同源 gateway（例如 Labs 主机上的 Nginx），再由 gateway 按 path 分发：
+
+```text
+learn.example.com
+  └─ Cloudflare Tunnel → http://127.0.0.1:8090
+      ├─ /                  → React Client
+      ├─ /api/v1/           → AIVirTeach Server
+      └─ /guacamole/        → http://127.0.0.1:8080/guacamole/
+```
+
+本地管理 Tunnel 的最小 `/etc/cloudflared/config.yml` 示例：
+
+```yaml
+tunnel: <TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  - hostname: learn.example.com
+    service: http://127.0.0.1:8090
+  - service: http_status:404
+```
+
+然后为 hostname 建 DNS route 并启动 Tunnel：
+
+```bash
+cloudflared tunnel route dns <TUNNEL_UUID或名称> learn.example.com
+cloudflared tunnel ingress validate
+sudo systemctl enable --now cloudflared
+```
+
+Cloudflare 也推荐通过 Dashboard 创建 remotely-managed Tunnel；无论采用哪种管理方式，公开路由都应指向同源 gateway，而不是重新开放旧的 `labs-console.<domain>:6080`。Cloudflare Tunnel 支持把公网 hostname 映射到本地 HTTP 服务，并透明承载 HTTP WebSocket；gateway 仍必须保留 `Upgrade`/`Connection` 请求头、关闭 buffering 并配置长连接 timeout。参考 [Cloudflare Tunnel Routing](https://developers.cloudflare.com/tunnel/routing/) 和 [本地配置文件说明](https://developers.cloudflare.com/tunnel/advanced/local-management/configuration-file/)。
+
+如果 React/Server 部署在 Vercel、Cloudflare Pages 或其他主机，那个环境的 `127.0.0.1:8080` 不是 Labs。此时应由 `learn.example.com` 前面的 edge/path router 把 `/guacamole/` 转发到 Labs Tunnel origin；浏览器看到的地址仍然必须是 `https://learn.example.com/guacamole/...`。可以给 Server-to-Labs 的 8760 另建受 Cloudflare Access Service Token 保护的私有 hostname，但浏览器 `/guacamole/` 路径不能依赖需要暴露机器 Service Token 的认证方式。
+
+公网入口不要暴露以下端口：
+
+```text
+8760  VM Manager
+4822  guacd
+3389  VM RDP
+```
+
+Guacamole iframe 通常不依赖 VM Manager CORS；需要检查的是反向代理 WebSocket、CSP `frame-src`、响应 `frame-ancestors` 和 `X-Frame-Options`。外部联调时，在浏览器 Network 中确认 Guacamole tunnel 成功升级为 HTTP 101。
 
 安全检查：当前 Compose 配置还包含浏览器会话以外的高权限 Token 注入，且旧版本可能曾把值直接写进受版本控制文件。生产重启前要先确认哪些管理接口仍在使用它们，把需要保留的值迁移到不提交 Git 的 `.env`/secret store，并轮换所有曾进入 Git 或日志的 Token。不要只删除文件中的一行就假设旧值已失效。
 
