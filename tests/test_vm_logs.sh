@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$ROOT/libvirt/scripts/vm-logs.sh"
+SCRIPT="$ROOT/vm-manager/libvirt/scripts/vm-logs.sh"
 
 "$SCRIPT" --help | grep -q 'Usage:'
 

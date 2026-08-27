@@ -1,0 +1,22 @@
+[Unit]
+Description=AIVirTeach standalone unified API documentation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aivirteach-docs
+Group=aivirteach-docs
+WorkingDirectory=/opt/aivirteach-labs/docs-service
+EnvironmentFile=-/etc/aivirteach-docs.env
+ExecStart=/opt/aivirteach-labs/docs-service/start_docs_service.sh
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

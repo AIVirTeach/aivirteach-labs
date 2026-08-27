@@ -5,30 +5,41 @@ import unittest
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
-class UnifiedStartServiceTests(unittest.TestCase):
-    def test_start_service_runs_unified_docs_gateway_on_8760(self) -> None:
-        script = (PROJECT_DIR / "start_service.sh").read_text(encoding="utf-8")
+class ServiceStartTests(unittest.TestCase):
+    def test_vm_manager_starts_only_vm_application_on_8760(self) -> None:
+        script = (PROJECT_DIR / "vm-manager" / "start_service.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AIVIRTEACH_API_TOKEN", script)
+        self.assertNotIn("AIVIRTEACH_DIAGNOSTIC_TOKEN", script)
+        self.assertIn("AIVIRTEACH_API_PORT:-8760", script)
+        self.assertIn("uvicorn service:app", script)
+        self.assertNotIn("docs_gateway_service:app", script)
 
-        self.assertIn('AIVIRTEACH_API_TOKEN', script)
-        self.assertNotIn('AIVIRTEACH_DIAGNOSTIC_TOKEN', script)
-        self.assertIn('AIVIRTEACH_API_PORT:-8760', script)
-        self.assertIn('docs_gateway_service:app', script)
-        self.assertNotIn('uvicorn service:app', script)
+    def test_docs_service_starts_without_service_tokens_on_8780(self) -> None:
+        script = (PROJECT_DIR / "docs-service" / "start_docs_service.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AIVIRTEACH_DOCS_PORT:-8780", script)
+        self.assertIn("docs_service:app", script)
+        self.assertNotIn("AIVIRTEACH_API_TOKEN", script)
+        self.assertNotIn("AIVIRTEACH_DIAGNOSTIC_TOKEN", script)
+        self.assertNotIn("AIVIRTEACH_AGENT_TOKEN", script)
 
     def test_diagnostic_gateway_runs_independently_on_8765(self) -> None:
-        script = (PROJECT_DIR / "start_gateway_service.sh").read_text(encoding="utf-8")
-
-        self.assertIn('AIVIRTEACH_DIAGNOSTIC_TOKEN', script)
-        self.assertNotIn('AIVIRTEACH_API_TOKEN', script)
-        self.assertIn('AIVIRTEACH_DIAGNOSTIC_PORT:-8765', script)
-        self.assertIn('gateway_service:app', script)
-        self.assertNotIn('docs_gateway_service:app', script)
+        script = (
+            PROJECT_DIR / "diagnostic-gateway" / "start_diagnostic_service.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("AIVIRTEACH_DIAGNOSTIC_TOKEN", script)
+        self.assertNotIn("AIVIRTEACH_API_TOKEN", script)
+        self.assertIn("AIVIRTEACH_DIAGNOSTIC_PORT:-8765", script)
+        self.assertIn("gateway_service:app", script)
 
     def test_agent_gateway_default_points_to_8765(self) -> None:
         config = (
-            PROJECT_DIR / "aivirteach_agent" / "config.py"
+            PROJECT_DIR / "agent-service" / "aivirteach_agent" / "config.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('http://127.0.0.1:8765', config)
+        self.assertIn("http://127.0.0.1:8765", config)
 
 
 if __name__ == "__main__":

@@ -2,3 +2,6 @@
 __pycache__/
 .pytest_cache/
 export_env.sh
+**/.cache/
+**/guacamole/.env
+**/config/*.env.local
