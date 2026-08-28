@@ -179,7 +179,16 @@ Browser / Tauri
 
 Server 返回相对地址 `/guacamole/?data=...`，Client 也只接受这个相对同源合约。当前部署不需要 `LABS_CONSOLE_WS_URL`、websockify 或公开的 `labs-console.<domain>`。如果旧分支仍需要这些组件，应单独维护旧分支文档，不要与这里的 Guacamole 配置混装。
 
-`vm-manager/guacamole/compose.yaml` 会启动三个仅绑定到 loopback 的服务：Guacamole Web（8080）、guacd，以及只负责启动已分配 VM 和签发短期票据的 VM Manager（8760）。guacd 的 4822 端口不会发布到宿主机，VM Manager 容器也不会启用管理员 API。
+`vm-manager/guacamole/compose.yaml` 会启动三个仅绑定到 loopback 的服务：Guacamole Web（8080）、guacd，以及 VM Manager（8760）。Docker 版 VM Manager 不是在容器里运行嵌套虚拟机：它通过只挂载进容器的宿主机 `/var/run/libvirt/libvirt-sock` 连接宿主机 `qemu:///system`，所以 API 创建出来的 domain 会出现在宿主机的 `virsh --connect qemu:///system list --all` 中。
+
+为了让 `POST /v1/vms` 真正可用，容器镜像包含 `qemu-img`、`cloud-localds` 和 `virt-install`，并把下面两个宿主机目录以相同绝对路径读写挂载：
+
+```text
+/var/lib/libvirt/images/aivirteach  VM golden image、overlay 和 cloud-init seed
+/var/lib/aivirteach-labs           VM 凭据和运行状态
+```
+
+容器还只额外保留 `CHOWN`、`FOWNER` capability，并只读挂载宿主机 `/etc/passwd`、`/etc/group`，让脚本生成的磁盘保持宿主机 `libvirt-qemu:kvm` 所需的实际 UID/GID。因为“libvirt socket + 可写 VM 存储”相当于把宿主机虚拟化管理权交给该容器，8760 必须保持 loopback/私网并使用强管理 Token，不能把管理员 API 直接暴露到公网。
 
 首次启动：
 
@@ -201,6 +210,27 @@ openssl rand -hex 32  # AIVIRTEACH_SESSION_TOKEN
 ```bash
 docker compose up -d --build
 docker compose ps
+```
+
+Docker 版启动后不要同时运行 `vm-manager/start_service.sh`，否则两个 VM Manager 会争用宿主机 8760。先验证容器确实连到宿主机 libvirt，并具备创建工具和写入目录：
+
+```bash
+docker compose exec vm-manager virsh --connect qemu:///system list --all
+docker compose exec vm-manager sh -lc \
+  'command -v qemu-img && command -v cloud-localds && command -v virt-install'
+docker compose exec vm-manager test -w /var/lib/libvirt/images/aivirteach/labs
+docker compose exec vm-manager test -w /var/lib/aivirteach-labs
+```
+
+调用创建接口后，在宿主机确认 VM，而不是进入容器寻找 QEMU 进程：
+
+```bash
+curl -X POST http://127.0.0.1:8760/v1/vms \
+  -H "Authorization: Bearer $AIVIRTEACH_API_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"lab_id":"lab-003","memory_mb":4096,"vcpus":2,"autostart":false}'
+
+sudo virsh --connect qemu:///system dominfo lab-003
 ```
 
 开发环境由 client 将同源路径 `/guacamole` 代理到 `http://127.0.0.1:8080`。server 只把 learner 映射到可信 `lab_id`，浏览器不会收到虚拟机明文 IP 或 RDP 密码。
