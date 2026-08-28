@@ -6,6 +6,12 @@ services:
     restart: unless-stopped
     cap_drop:
       - ALL
+    # create-learner-vm.sh assigns generated disks to the host libvirt-qemu
+    # account, then tightens their modes. Keep the exception narrower than
+    # running the container as fully privileged.
+    cap_add:
+      - CHOWN
+      - FOWNER
     security_opt:
       - no-new-privileges:true
     environment:
@@ -19,8 +25,15 @@ services:
     ports:
       - "127.0.0.1:8760:8760"
     volumes:
+      # virsh/virt-install talk to the host qemu:///system daemon. The host
+      # identity files let chown resolve the same libvirt-qemu/kvm/libvirt IDs.
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
       - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
-      - /var/lib/aivirteach-labs:/var/lib/aivirteach-labs:ro
+      # Keep identical absolute paths: host libvirtd receives these paths from
+      # virt-install and must be able to open the generated overlay/seed files.
+      - /var/lib/libvirt/images/aivirteach:/var/lib/libvirt/images/aivirteach:rw
+      - /var/lib/aivirteach-labs:/var/lib/aivirteach-labs:rw
 
   guacd:
     image: "guacamole/guacd:${GUACAMOLE_VERSION:-1.6.0}"

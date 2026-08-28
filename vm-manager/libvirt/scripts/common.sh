@@ -55,10 +55,15 @@ choose_osinfo() {
 }
 
 ensure_default_network() {
+  local network_info
   if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" >/dev/null 2>&1; then
     die "Libvirt network '$LIBVIRT_NETWORK' does not exist. Run scripts/install-host.sh first."
   fi
-  if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" | grep -q 'Active:.*yes'; then
+  # Do not use `virsh ... | grep -q` under `set -o pipefail`: grep may close
+  # the pipe after the match and make virsh report SIGPIPE, which incorrectly
+  # sends an already-active network through `net-start`.
+  network_info="$(as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK")"
+  if ! grep -q 'Active:.*yes' <<<"$network_info"; then
     as_root virsh --connect qemu:///system net-start "$LIBVIRT_NETWORK" >/dev/null
   fi
   as_root virsh --connect qemu:///system net-autostart "$LIBVIRT_NETWORK" >/dev/null
