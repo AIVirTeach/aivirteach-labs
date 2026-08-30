@@ -23,7 +23,7 @@ as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
   qemu-kvm qemu-utils libvirt-daemon-system libvirt-clients \
   virtinst virt-viewer cloud-image-utils libguestfs-tools bridge-utils \
   cpu-checker curl wget openssl ca-certificates acl netcat-openbsd \
-  libosinfo-bin osinfo-db
+  libosinfo-bin osinfo-db jq
 
 log "Enabling libvirt..."
 as_root systemctl enable --now libvirtd

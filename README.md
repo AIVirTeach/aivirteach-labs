@@ -1,7 +1,7 @@
 # aivirteach-labs
 AIVirTeach Labs Runtime — Go + KubeVirt VM 编排, noVNC, Evaluator
 
-labs - 只负责执行不负责状态
+Labs 负责执行和可靠投递；课程进度的 canonical state 仍只属于 `aivirteach-server`。
 
 ## Agent 课程文件
 
@@ -37,7 +37,7 @@ export AIVIRTEACH_MODEL_THINKING="disabled"
 
 ## FastAPI 服务
 
-四个端口各自运行独立的应用，避免高权限 VM 管理、只读调查、模型推理和文档展示共用同一个进程：
+四个端口各自运行独立的应用，另有一个不监听端口的 Progress Worker。这样高权限 VM 管理、只读调查、模型推理、可靠投递和文档展示不会共用同一个进程：
 
 | 端口 | 服务 | 实际职责 |
 | --- | --- | --- |
@@ -45,6 +45,8 @@ export AIVIRTEACH_MODEL_THINKING="disabled"
 | 8765 | Diagnostic Gateway | 执行固定模板的只读调查工具 |
 | 8770 | Agent Service | 结合课程上下文推理并调用 8765 |
 | 8780 | Unified Docs Service | 聚合三个服务的 OpenAPI，不执行服务操作 |
+
+`progress-worker/` 没有 HTTP 端口，也不会加入 8780 Swagger。它从 Server 取得可信 VM/课程目标，经 8765 检测，并用本地 SQLite outbox 把规范化事件幂等回传 Server。
 
 在 `http://127.0.0.1:8780/docs` 使用 **Try it out** 时，Swagger 浏览器会按照每个操作声明的地址直接请求 8760、8765 或 8770；8780 不代理这些操作。
 
@@ -64,6 +66,7 @@ python3 -m venv .venv
 
 ```bash
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
+export AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
 export AIVIRTEACH_DIAGNOSTIC_PORT="8765"
 export AIVIRTEACH_DIAGNOSTIC_CORS_ORIGINS="http://127.0.0.1:8780,http://localhost:8780"
 ./diagnostic-gateway/start_diagnostic_service.sh
@@ -93,6 +96,24 @@ export AIVIRTEACH_MODEL_PROVIDER="fake"
 ./docs-service/start_docs_service.sh
 ```
 
+在 Server 已启动后，可在终端 5 验证并启动 Progress Worker。它只拿 `AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN`，因此不能调用 journal、文件、容器或网络诊断；同时另持有一枚绑定本机 `worker_id` 的 Server token：
+
+```bash
+cp progress-worker/config/progress.env.example \
+  progress-worker/config/progress.env.local
+chmod 600 progress-worker/config/progress.env.local
+# 编辑文件，使 AIVIRTEACH_PROGRESS_SERVER_TOKEN 与 Server
+# PROGRESS_WORKER_TOKENS 中 labs-host-01 对应的值相同；两个 token
+# 都必须与 Agent 使用的 AIVIRTEACH_DIAGNOSTIC_TOKEN 不同。
+set -a
+source progress-worker/config/progress.env.local
+set +a
+./progress-worker/start_progress_worker.sh --once
+./progress-worker/start_progress_worker.sh
+```
+
+生产环境使用 `systemd/aivirteach-progress-worker.service` 和 `/etc/aivirteach-progress.env`。Worker 账户不需要 root、`libvirt` 组、libvirt socket 或 VM 镜像目录权限。
+
 文档地址：
 
 ```text
@@ -118,6 +139,18 @@ DELETE /v1/vms/{lab_id}?confirm=true
 POST   /v1/diagnostics/{lab_id}/tools/{tool}  # 实际运行于 8765
 POST   /v1/agent/diagnose                     # 实际运行于 8770
 ```
+
+课程进度工具的只读测试：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"vm_instance_id\":\"$(virsh --connect qemu:///system domuuid lab-001)\",\"parameters\":{\"checkpoint_ids\":[\"P01\"]}}" \
+  http://127.0.0.1:8765/v1/diagnostics/lab-001/tools/check_course_progress
+```
+
+请求必须带当前 libvirt `vm_instance_id`，且 parameters 只能包含 P01–P24 的 `checkpoint_ids`；Gateway 会先核对名称与 UUID，再固定执行镜像内的 `/usr/local/bin/aivirteach-check-progress`，不接受 path、argv 或 shell。P01–P07 是当前镜像的 guest probes；P08–P24 仍需 n8n execution、浏览器或邮件回执等平台证据。
 
 Swagger 右上角的 **Authorize** 会分别显示 Admin、Session、Diagnostic 和 Agent Bearer Token。
 
@@ -158,7 +191,7 @@ ssh -N \
 - 8765：`AIVIRTEACH_DIAGNOSTIC_CORS_ORIGINS=http://127.0.0.1:18780`
 - 8770：`AIVIRTEACH_AGENT_CORS_ORIGINS=http://127.0.0.1:18780`
 
-生产环境应使用 HTTPS 反向代理和防火墙。环境文件分别是 `/etc/aivirteach-labs.env`、`/etc/aivirteach-diagnostics.env`、`/etc/aivirteach-agent.env` 和 `/etc/aivirteach-docs.env`。
+生产环境应使用 HTTPS 反向代理和防火墙。环境文件分别是 `/etc/aivirteach-labs.env`、`/etc/aivirteach-diagnostics.env`、`/etc/aivirteach-agent.env`、`/etc/aivirteach-progress.env` 和 `/etc/aivirteach-docs.env`。
 
 ## 浏览器内嵌 RDP（Guacamole）
 
@@ -322,7 +355,7 @@ Guacamole iframe 通常不依赖 VM Manager CORS；需要检查的是反向代�
 
 ## 服务文件分布
 
-仓库根目录只保留三个服务共同使用的依赖、部署文件和测试；每套服务的入口、实现、专属配置及资源放在自己的目录中。
+仓库根目录只保留各 Python 服务与 Worker 共用的依赖、部署文件和测试；每个边界的入口、实现、专属配置及资源放在自己的目录中。
 
 ```text
 aivirteach-labs/
@@ -350,9 +383,13 @@ aivirteach-labs/
 │   ├── openapi_aggregator.py   # 通过 HTTP 获取并合并三个服务 schema
 │   ├── static/                 # 本地 Swagger UI JS/CSS/图标
 │   └── config/                 # Docs Service 环境变量示例
-├── systemd/                    # 四个服务的 systemd unit
+├── progress-worker/            # 无端口：检测、SQLite outbox、可靠投递
+│   ├── start_progress_worker.sh
+│   ├── progress_worker/        # 配置、严格 wire models、HTTP client、store、scheduler
+│   └── config/                 # Worker 环境变量示例
+├── systemd/                    # 四个 HTTP 服务和 Progress Worker 的 unit
 ├── tests/                      # 跨服务 Python 和 Shell 测试
-└── requirements.txt            # 三个服务共享的 Python 依赖
+└── requirements.txt            # Python 服务与 Worker 共享依赖
 ```
 
 | 服务 | 入口 | 环境变量示例 | 主要专属依赖 |
@@ -361,6 +398,7 @@ aivirteach-labs/
 | Diagnostic Gateway | `diagnostic-gateway/start_diagnostic_service.sh` | `diagnostic-gateway/config/diagnostics.env.example` | libvirt socket、QEMU Guest Agent |
 | Agent Service | `agent-service/start_agent_service.sh` | `agent-service/config/agent.env.example` | `agent-service/aivirteach_agent/`、`agent-service/.cache/course/` |
 | Unified Docs | `docs-service/start_docs_service.sh` | `docs-service/config/docs.env.example` | 三个服务的 `/openapi.json`、本地 Swagger UI 静态资源 |
+| Progress Worker | `progress-worker/start_progress_worker.sh` | `progress-worker/config/progress.env.example` | 8765、Server internal API、SQLite WAL/outbox |
 
 服务间调用方向：
 
@@ -369,7 +407,13 @@ aivirteach-server ──► Agent Service :8770 ──► Diagnostic Gateway :87
 
 aivirteach-server ──► VM Manager :8760 ──► libvirt
 
+aivirteach-server ──targets──► Progress Worker ──► Diagnostic Gateway :8765 ──► VM
+       ▲                         │
+       └────idempotent events───┴── SQLite outbox
+
 Docs Service :8780 ──HTTP GET──► :8760/:8765/:8770 /openapi.json
 ```
 
 Docs Service 不 import 三个运行时服务的 Python 实现，也不持有服务 Token。某个服务暂时离线时，它会继续展示上一次成功读取的 schema 并标记为 `stale`；从未读取成功的服务会标记为 `unavailable`。
+
+Progress Worker 也不 import VM Manager 或 Agent。Server 按 `event_id` 去重；只有 Server 回应的 `accepted_event_ids` 会在本地标为 delivered。网络中断、Server 重启或 Worker 在发送后崩溃都只会造成同一 ID 重投，不会凭空增加完成步骤。Worker 将 Server 下发的预期 UUID 交给 Gateway；Gateway 在 QGA 前核对 `lab_id` 的实际 libvirt UUID、通过该 UUID 执行，并在响应中回传给 Worker再次核对。VM 删除重建时必须在 Server assignment 中换成新 UUID，旧 outbox 因而不能污染同名 `lab_id`。

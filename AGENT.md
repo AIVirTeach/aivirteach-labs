@@ -1,17 +1,23 @@
 # AIVirTeach troubleshooting agent
 
-This repository contains four separate service boundaries:
+This repository contains four HTTP service boundaries and one background worker:
 
 - `vm-manager/service.py` runs with libvirt privileges on port 8760. It exposes
   only VM lifecycle operations under `AIVIRTEACH_API_TOKEN`.
 - `diagnostic-gateway/gateway_service.py` runs with libvirt privileges on port 8765. It exposes only
-  fixed, read-only diagnostic operations under `AIVIRTEACH_DIAGNOSTIC_TOKEN`.
+  fixed, read-only diagnostic operations. `AIVIRTEACH_DIAGNOSTIC_TOKEN` can use
+  the full allowlist; `AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN` can use only
+  `check_course_progress`.
 - `agent-service/agent_service.py` runs as an unprivileged account on port 8770. It receives a
   normalized course-step snapshot from `aivirteach-server`, asks a replaceable
   model provider what evidence is needed, and calls only port 8765.
 - `docs-service/docs_service.py` runs without service tokens on port 8780. It
   fetches each service's OpenAPI document over HTTP and serves self-hosted
   Swagger assets; it never mounts or proxies runtime operations.
+- `progress-worker/progress_worker/worker.py` runs without an HTTP port or
+  libvirt access. It gets trusted assignments from `aivirteach-server`, calls
+  only the fixed course-progress tool on 8765, and uses a SQLite WAL/outbox to
+  deliver idempotent progress events back to the Server.
 
 The Agent never receives `AIVIRTEACH_API_TOKEN`, VM credentials, a shell tool,
 or lifecycle operations. Diagnostic commands are fixed argv templates executed
@@ -38,6 +44,7 @@ Diagnostic Gateway first. The current user must be able to access
 
 ```bash
 export AIVIRTEACH_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
+export AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN="$(openssl rand -hex 32)"
 ./diagnostic-gateway/start_diagnostic_service.sh
 ```
 
@@ -65,6 +72,19 @@ Start the standalone unified documentation after the runtime services:
 
 ```bash
 ./docs-service/start_docs_service.sh
+```
+
+After `aivirteach-server` is available, configure and test the background
+Progress Worker. Its Server token must match only its own key in the Server's
+`PROGRESS_WORKER_TOKENS`; its progress-only diagnostic token must be different
+from the Agent's full diagnostic token:
+
+```bash
+set -a
+source progress-worker/config/progress.env.local
+set +a
+./progress-worker/start_progress_worker.sh --once
+./progress-worker/start_progress_worker.sh
 ```
 
 `fake` validates the HTTP integration but intentionally performs no reasoning.
@@ -167,6 +187,11 @@ It never executes suggested actions.
   denied. Returned content is also redacted and truncated.
 - Logs, files, course text, and learner text are always labeled untrusted and
   cannot add tools or broaden resource allowlists.
+- Course progress requests accept only P01-P24 IDs and execute the fixed guest
+  dispatcher. Raw stdout/stderr never reaches the Worker or Server.
+- The Worker has no VM Manager, Agent, model, Guacamole, or learner-session
+  credentials. A persisted event is removed from the retry set only after its
+  exact `event_id` is acknowledged by the Server.
 
 The first version supports journal/systemd, networking, bounded course files,
 Docker, and Python/Node inspection. It deliberately excludes arbitrary shell,

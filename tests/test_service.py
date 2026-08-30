@@ -118,6 +118,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
             return_value=(
                 "Learner VM created.\n"
                 "VM: lab-002\n"
+                "VM instance ID: 26a6db7e-1ea7-4de2-9ca3-cf58edbab809\n"
                 "Username: learner\n"
                 "RDP password: generated-secret"
             )
@@ -131,6 +132,10 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["rdp_password"], "generated-secret")
+        self.assertEqual(
+            response.json()["vm_instance_id"],
+            "26a6db7e-1ea7-4de2-9ca3-cf58edbab809",
+        )
         argv = runner.await_args.args[0]
         self.assertEqual(argv[0], service.CREATE_VM_SCRIPT)
         self.assertEqual(
@@ -148,6 +153,25 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 422)
         runner.assert_not_awaited()
+
+    async def test_create_rejects_a_missing_vm_instance_id(self) -> None:
+        runner = AsyncMock(
+            return_value=(
+                "Learner VM created.\n"
+                "VM: lab-002\n"
+                "Username: learner\n"
+                "RDP password: generated-secret"
+            )
+        )
+        with patch.object(service, "run_script", runner):
+            response = await self.client.post(
+                "/v1/vms",
+                headers=self.auth,
+                json={"lab_id": "lab-002"},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("generated-secret", response.text)
 
     async def test_delete_requires_explicit_confirmation(self) -> None:
         runner = AsyncMock()
