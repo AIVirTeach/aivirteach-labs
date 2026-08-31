@@ -9,3 +9,4 @@ export_env.sh
 ./diagnostic-gateway/config/diagnostics.env
 ./agent-service/config/agent.env
 ./vm-manager/config/api.env
+\n.env\n
