@@ -17,6 +17,9 @@ scripts/install-host.sh
 scripts/build-base-image.sh
 scripts/create-learner-vm.sh
 scripts/vm-control.sh
+course-images/<course>/manifest.json
+course-images/<course>/provision.sh
+course-images/<course>/checks/
 templates/customize-image.example.sh
 tests/static-checks.sh
 ```
@@ -110,6 +113,46 @@ Force rebuild:
 
 The build script refuses `--force` while any learner overlays exist. Publish versioned images instead of replacing an in-use base.
 
+### Course-specific golden image example
+
+`course-images/AI Daily Briefing/` demonstrates how a reviewed course bundle is embedded during the golden-image build. The Markdown remains source guidance; the builder executes only the reviewed `provision.sh` and installs the read-only checkpoint scripts.
+
+Validate the bundle without creating a VM:
+
+```bash
+./course-images/AI\ Daily\ Briefing/tests/test-checks.sh
+./scripts/build-base-image.sh --validate-only \
+  --course-image-dir "$PWD/course-images/AI Daily Briefing"
+```
+
+Build its Ubuntu 22.04 course image:
+
+```bash
+sudo ./scripts/build-base-image.sh \
+  --course-image-dir "$PWD/course-images/AI Daily Briefing"
+```
+
+The course bundle must stay under `course-images/`, contain no symlinks or likely secret files, use at most 128 files, and be at most 5 MiB uncompressed. Build settings are read non-executably from allowlisted fields in `manifest.json`. The image is published only after the powered-off builder disk contains markers matching the image name, course ID, and bundle SHA-256.
+
+Inside a VM created from that image, a checkpoint can be queried with:
+
+```bash
+sudo /usr/local/bin/aivirteach-check-step P04
+```
+
+The host does not ask the learner to self-report this result. Progress Worker
+calls the Diagnostic Gateway, which invokes the fixed batch dispatcher through
+QEMU Guest Agent:
+
+```text
+/usr/local/bin/aivirteach-check-progress P01 P02
+```
+
+The Gateway requires the Server-owned VM UUID and accepts only checkpoint IDs
+as tool parameters; it returns normalized JSON without raw stdout/stderr.
+
+See `course-images/AI Daily Briefing/README.md` for the supported checkpoint boundary. The VM API does not yet map `course_id` to this golden image automatically.
+
 ## 4. Create a learner VM
 
 ```bash
@@ -125,7 +168,18 @@ Optional resources and SSH key:
   --ssh-key "$HOME/.ssh/id_ed25519.pub"
 ```
 
-The command prints the learner's generated RDP password. A protected copy is stored at:
+When using an explicitly selected custom base image, pass its Ubuntu release as well so libosinfo metadata matches the guest:
+
+```bash
+./scripts/create-learner-vm.sh lab-course-demo \
+  --base-image /var/lib/libvirt/images/aivirteach/base/CUSTOM.qcow2 \
+  --os-release 22.04
+```
+
+The command prints the learner's generated RDP password and immutable libvirt
+domain UUID (`VM instance ID`). The UUID is also returned as `vm_instance_id`
+by `POST /v1/vms`; use it in the Server's progress assignment so a deleted and
+recreated `lab-001` cannot inherit stale events. A protected copy is stored at:
 
 ```text
 /var/lib/aivirteach-labs/lab-001/credentials.txt

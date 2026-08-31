@@ -7,8 +7,12 @@ for script in "$ROOT"/scripts/*.sh; do
 done
 "$ROOT/../../tests/test_vm_logs.sh"
 grep -q 'qemu-kvm' "$ROOT/scripts/install-host.sh"
+grep -q 'jq' "$ROOT/scripts/install-host.sh"
 grep -q 'cloud-localds' "$ROOT/scripts/build-base-image.sh"
 grep -q 'qemu-img create' "$ROOT/scripts/create-learner-vm.sh"
 grep -q 'xrdp' "$ROOT/scripts/build-base-image.sh"
 grep -q '/var/log/libvirt/qemu/' "$ROOT/scripts/vm-logs.sh"
+"$ROOT/course-images/AI Daily Briefing/tests/test-checks.sh"
+"$ROOT/scripts/build-base-image.sh" --validate-only \
+  --course-image-dir "$ROOT/course-images/AI Daily Briefing"
 echo "Static checks passed."

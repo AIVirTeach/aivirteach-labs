@@ -10,6 +10,7 @@ from aivirteach_agent.app import build_provider, create_app
 from aivirteach_agent.config import Settings
 from aivirteach_agent.models import DiagnoseRequest, ToolName
 from aivirteach_agent.orchestrator import AgentOrchestrator, _parse_draft
+from aivirteach_agent.prompts import SYSTEM_PROMPT
 from aivirteach_agent.providers import (
     FakeProvider,
     OpenAICompatibleProvider,
@@ -89,6 +90,12 @@ class FakeGateway:
 
     async def aclose(self) -> None:
         return None
+
+
+class ProgressSnapshotPromptTests(unittest.TestCase):
+    def test_agent_uses_server_snapshot_instead_of_rechecking_completion(self) -> None:
+        self.assertIn("learner_state.vm_progress", SYSTEM_PROMPT)
+        self.assertIn("instead of calling tools merely to re-check course completion", SYSTEM_PROMPT)
 
 
 class AgentApiTests(unittest.IsolatedAsyncioTestCase):

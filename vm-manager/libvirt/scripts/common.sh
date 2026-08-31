@@ -44,9 +44,37 @@ validate_lab_id() {
 }
 
 choose_osinfo() {
+  local release="${1:-}"
+  local preferred=""
   local candidate
+  local osinfo_list
+
+  case "$release" in
+    24.04) preferred="ubuntu24.04" ;;
+    22.04) preferred="ubuntu22.04" ;;
+    20.04) preferred="ubuntu20.04" ;;
+  esac
+  osinfo_list="$(virt-install --osinfo list 2>/dev/null || true)"
+
+  if [[ -n "$preferred" ]] \
+      && awk -v candidate="$preferred" '
+        {for (i=1; i<=NF; i++) {gsub(/,$/, "", $i); if ($i == candidate) found=1}}
+        END {exit !found}
+      ' \
+        <<<"$osinfo_list"; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  if [[ -n "$preferred" ]]; then
+    printf 'generic\n'
+    return 0
+  fi
   for candidate in ubuntu24.04 ubuntu22.04 ubuntu20.04 generic; do
-    if virt-install --osinfo list 2>/dev/null | awk '{print $1}' | grep -Fxq "$candidate"; then
+    if awk -v candidate="$candidate" '
+        {for (i=1; i<=NF; i++) {gsub(/,$/, "", $i); if ($i == candidate) found=1}}
+        END {exit !found}
+      ' \
+        <<<"$osinfo_list"; then
       printf '%s\n' "$candidate"
       return 0
     fi

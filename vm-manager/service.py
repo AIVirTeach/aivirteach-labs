@@ -29,6 +29,10 @@ LIBVIRT_DIR = Path(
 VM_CONTROL_SCRIPT = LIBVIRT_DIR / "scripts" / "vm-control.sh"
 CREATE_VM_SCRIPT = LIBVIRT_DIR / "scripts" / "create-learner-vm.sh"
 LAB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+VM_INSTANCE_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 SENSITIVE_SUBPROCESS_ENV = frozenset(
     {
         "AIVIRTEACH_API_TOKEN",
@@ -407,8 +411,15 @@ async def create_vm(request: CreateVMRequest) -> dict[str, str | int | bool]:
         output = await run_script(argv, timeout_seconds=CREATE_TIMEOUT_SECONDS)
 
     parsed = _parse_key_value_lines(output, separator=":")
+    vm_instance_id = parsed.get("VM instance ID", "")
+    if not VM_INSTANCE_ID_RE.fullmatch(vm_instance_id):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="VM creation did not return a valid instance ID.",
+        )
     return {
         "lab_id": lab_id,
+        "vm_instance_id": vm_instance_id,
         "username": parsed.get("Username", "learner"),
         "rdp_password": parsed.get("RDP password", ""),
         "rdp_port": 3389,
