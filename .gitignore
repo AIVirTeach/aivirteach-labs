@@ -6,3 +6,6 @@ export_env.sh
 **/guacamole/.env
 **/config/*.env.local
 *.env
+./diagnostic-gateway/config/diagnostics.env
+./agent-service/config/agent.env
+./vm-manager/config/api.env
