@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import Settings
@@ -17,6 +20,10 @@ from .gateway import DiagnosticGateway, HttpDiagnosticGateway
 from .models import DiagnoseRequest, DiagnoseResponse
 from .orchestrator import AgentOrchestrator
 from .providers import FakeProvider, ModelProvider, OpenAICompatibleProvider
+
+
+LOG = logging.getLogger("aivirteach.agent")
+SSE_HEARTBEAT_SECONDS = 10
 
 
 agent_bearer = HTTPBearer(
@@ -79,7 +86,7 @@ def create_app(
 
     app = FastAPI(
         title="AIVirTeach Troubleshooting Agent",
-        version="0.1.0",
+        version="0.2.0",
         description="A bounded, read-only course-aware VM troubleshooting agent.",
         lifespan=lifespan,
     )
@@ -146,9 +153,122 @@ def create_app(
         async with request_slots:
             return await orchestrator.diagnose(request)
 
+    @app.post(
+        "/v1/agent/diagnose/stream",
+        response_class=StreamingResponse,
+        dependencies=[Depends(require_agent_token)],
+        tags=["agent"],
+        responses={
+            200: {
+                "description": "SSE progress events followed by a validated result event.",
+                "content": {
+                    "text/event-stream": {
+                        "schema": {"type": "string"},
+                    }
+                },
+            }
+        },
+    )
+    async def diagnose_stream(request: DiagnoseRequest) -> StreamingResponse:
+        errors = config.readiness_errors()
+        if errors:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Agent dependencies are not configured.",
+            )
+
+        request_id = str(request.request_id)
+        queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
+
+        async def publish(event: str, data: dict[str, Any]) -> None:
+            queue.put_nowait((event, data))
+
+        async def produce() -> None:
+            try:
+                async with request_slots:
+                    await publish("started", {"phase": "diagnosis"})
+                    result = await orchestrator.diagnose(request, on_event=publish)
+                await publish(
+                    "result",
+                    {"response": result.model_dump(mode="json")},
+                )
+                await publish("done", {"status": result.status})
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("diagnosis stream failed for request %s", request_id)
+                await publish(
+                    "error",
+                    {
+                        "code": "AGENT_STREAM_FAILED",
+                        "message": "The diagnosis stream ended unexpectedly.",
+                    },
+                )
+            finally:
+                queue.put_nowait(None)
+
+        async def events() -> AsyncIterator[str]:
+            sequence = 0
+            producer = asyncio.create_task(
+                produce(),
+                name=f"agent-stream-{request_id}",
+            )
+
+            def encoded(event: str, data: dict[str, Any]) -> str:
+                nonlocal sequence
+                sequence += 1
+                return _sse_event(
+                    event,
+                    {
+                        "schema_version": 1,
+                        "request_id": request_id,
+                        "sequence": sequence,
+                        **data,
+                    },
+                )
+
+            try:
+                yield encoded("accepted", {"status": "accepted"})
+                while True:
+                    try:
+                        item = await asyncio.wait_for(
+                            queue.get(),
+                            timeout=SSE_HEARTBEAT_SECONDS,
+                        )
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if item is None:
+                        break
+                    event, data = item
+                    yield encoded(event, data)
+            finally:
+                if not producer.done():
+                    producer.cancel()
+                await asyncio.gather(producer, return_exceptions=True)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     app.state.settings = config
     app.state.provider = selected_provider
     app.state.gateway = selected_gateway
     app.state.course_repository = selected_course_repository
     app.state.orchestrator = orchestrator
     return app
+
+
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    payload = json.dumps(
+        data,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"event: {event}\ndata: {payload}\n\n"

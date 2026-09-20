@@ -90,11 +90,44 @@ export AIVIRTEACH_MODEL_PROVIDER="fake"
 ./agent-service/start_agent_service.sh
 ```
 
+也可以从仓库根目录使用统一 Compose 运行 Diagnostic Gateway、Agent 和
+Unified Docs：
+
+```bash
+mkdir -p "agent-service/.cache/course"
+docker compose --env-file config.env up -d --build \
+  diagnostic-service agent-service unified-docs
+docker compose --env-file config.env ps
+curl http://127.0.0.1:8765/ready
+curl http://127.0.0.1:8770/ready
+curl http://127.0.0.1:8780/ready
+```
+
+根目录 `config.env` 需要包含本页后文 Compose 清单列出的所有必需密钥，因为
+Compose 会在选择服务前解析整份文件；其中 Agent 与 Diagnostic Gateway 使用
+`AIVIRTEACH_DIAGNOSTIC_TOKEN`、`AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN` 和
+`AIVIRTEACH_AGENT_TOKEN`。Agent 与 Gateway 必须使用同一枚
+`AIVIRTEACH_DIAGNOSTIC_TOKEN`。默认使用 `fake` provider；
+实际模型还要配置 `AIVIRTEACH_MODEL_PROVIDER=openai_compatible`、模型 URL、API Key
+和模型名称。容器内的 Gateway URL 已固定为 Compose 服务地址
+`http://diagnostic-service:8765`。课程缓存默认从宿主机
+`agent-service/.cache/course` 只读挂载，可用
+`AIVIRTEACH_COURSE_CACHE_HOST` 改为其他宿主机目录。
+
 在终端 4 启动不带任何服务 Token 的 Unified Docs Service：
 
 ```bash
 ./docs-service/start_docs_service.sh
 ```
+
+如果上一段已经启动 Compose 的 `unified-docs`，不要再运行这个主机脚本；统一
+Swagger 页面直接访问 `http://127.0.0.1:8780/docs`。
+
+默认情况下，容器从 `vm-manager:8760`、`diagnostic-service:8765` 和
+`agent-service:8770` 获取 OpenAPI。如果三个运行时服务仍由宿主机脚本启动，可在
+`config.env` 中把相应的 `AIVIRTEACH_*_OPENAPI_URL` 改为
+`http://host.docker.internal:<端口>/openapi.json`；Compose 已为 Linux 配置
+`host-gateway` 映射。
 
 在 Server 已启动后，可在终端 5 验证并启动 Progress Worker。它只拿 `AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN`，因此不能调用 journal、文件、容器或网络诊断；同时另持有一枚绑定本机 `worker_id` 的 Server token：
 
@@ -138,6 +171,24 @@ DELETE /v1/vms/{lab_id}?confirm=true
 
 POST   /v1/diagnostics/{lab_id}/tools/{tool}  # 实际运行于 8765
 POST   /v1/agent/diagnose                     # 实际运行于 8770
+POST   /v1/agent/diagnose/stream              # 8770 SSE 流式进度与最终结果
+```
+
+Agent 的 SSE 接口使用与普通诊断接口完全相同的 JSON request body 和
+`AIVIRTEACH_AGENT_TOKEN`。它依次发送 `accepted`、`started`、
+`context_ready`、推理状态、经过清理的工具状态、`result` 和 `done`。
+`result.response` 与普通接口的 `DiagnoseResponse` 相同。该接口不会发送模型
+内部推理、工具参数或原始日志。因为它是带 Bearer Token 和 JSON body 的 POST，
+浏览器应使用 `fetch` 的 ReadableStream，而不是只能发 GET 的 `EventSource`。
+
+终端测试时，把普通 Agent request body 保存为 `request.json`：
+
+```bash
+curl -N -X POST \
+  -H "Authorization: Bearer $AIVIRTEACH_AGENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data-binary @request.json \
+  http://127.0.0.1:8770/v1/agent/diagnose/stream
 ```
 
 课程进度工具的只读测试：
@@ -212,7 +263,9 @@ Browser / Tauri
 
 Server 返回相对地址 `/guacamole/?data=...`，Client 也只接受这个相对同源合约。当前部署不需要 `LABS_CONSOLE_WS_URL`、websockify 或公开的 `labs-console.<domain>`。如果旧分支仍需要这些组件，应单独维护旧分支文档，不要与这里的 Guacamole 配置混装。
 
-`vm-manager/guacamole/compose.yaml` 会启动三个仅绑定到 loopback 的服务：Guacamole Web（8080）、guacd，以及 VM Manager（8760）。Docker 版 VM Manager 不是在容器里运行嵌套虚拟机：它通过只挂载进容器的宿主机 `/var/run/libvirt/libvirt-sock` 连接宿主机 `qemu:///system`，所以 API 创建出来的 domain 会出现在宿主机的 `virsh --connect qemu:///system list --all` 中。
+仓库根目录的 `compose.yaml` 会启动 VM Manager（8760）、Diagnostic Gateway
+（8765）、Agent Service（8770）、Unified Docs（8780）、Guacamole Web（8080）
+和 guacd；所有宿主机 HTTP 端口都只绑定到 loopback。Docker 版 VM Manager 不是在容器里运行嵌套虚拟机：它通过只挂载进容器的宿主机 `/var/run/libvirt/libvirt-sock` 连接宿主机 `qemu:///system`，所以 API 创建出来的 domain 会出现在宿主机的 `virsh --connect qemu:///system list --all` 中。
 
 为了让 `POST /v1/vms` 真正可用，容器镜像包含 `qemu-img`、`cloud-localds` 和 `virt-install`，并把下面两个宿主机目录以相同绝对路径读写挂载：
 
@@ -223,36 +276,59 @@ Server 返回相对地址 `/guacamole/?data=...`，Client 也只接受这个相�
 
 容器还只额外保留 `CHOWN`、`FOWNER` capability，并只读挂载宿主机 `/etc/passwd`、`/etc/group`，让脚本生成的磁盘保持宿主机 `libvirt-qemu:kvm` 所需的实际 UID/GID。因为“libvirt socket + 可写 VM 存储”相当于把宿主机虚拟化管理权交给该容器，8760 必须保持 loopback/私网并使用强管理 Token，不能把管理员 API 直接暴露到公网。
 
-首次启动：
+首次启动时，在仓库根目录创建不提交 Git 的 `config.env`，配置下列必需值：
 
 ```bash
-cd vm-manager/guacamole
-cp .env.example .env
-chmod 600 .env
+touch config.env
+chmod 600 config.env
+mkdir -p "agent-service/.cache/course"
 ```
 
-编辑 `.env`，分别生成 JSON 认证密钥和 server-to-Labs 会话 token：
+局域网访问地址统一由 `AIVIRTEACH_HOST_IP` 管理。CORS 和 Swagger 的浏览器可见
+地址应通过 `${AIVIRTEACH_HOST_IP}` 派生；迁移服务器时只修改这一行：
+
+```dotenv
+AIVIRTEACH_HOST_IP="10.162.179.63"
+AIVIRTEACH_VM_CORS_ORIGINS="http://${AIVIRTEACH_HOST_IP}:8780"
+AIVIRTEACH_DIAGNOSTIC_CORS_ORIGINS="http://${AIVIRTEACH_HOST_IP}:8780"
+AIVIRTEACH_AGENT_CORS_ORIGINS="http://${AIVIRTEACH_HOST_IP}:8780"
+AIVIRTEACH_VM_DOCS_URL="http://${AIVIRTEACH_HOST_IP}:8760"
+AIVIRTEACH_DIAGNOSTIC_DOCS_URL="http://${AIVIRTEACH_HOST_IP}:8765"
+AIVIRTEACH_AGENT_DOCS_URL="http://${AIVIRTEACH_HOST_IP}:8770"
+```
+
+分别生成 JSON 认证密钥和各服务 token：
 
 ```bash
-openssl rand -hex 16  # GUACAMOLE_JSON_SECRET
+openssl rand -hex 16  # GUACAMOLE_JSON_SECRET（也兼容 AIVIRTEACH_GUACAMOLE_JSON_SECRET）
 openssl rand -hex 32  # AIVIRTEACH_SESSION_TOKEN
+openssl rand -hex 32  # AIVIRTEACH_API_TOKEN
+openssl rand -hex 32  # AIVIRTEACH_DIAGNOSTIC_TOKEN
+openssl rand -hex 32  # AIVIRTEACH_PROGRESS_DIAGNOSTIC_TOKEN
+openssl rand -hex 32  # AIVIRTEACH_AGENT_TOKEN
 ```
 
 `AIVIRTEACH_SESSION_TOKEN` 必须与 `aivirteach-server/.env` 中的 `LABS_SESSION_TOKEN` 完全一致。然后启动：
 
 ```bash
-docker compose up -d --build
-docker compose ps
+docker compose --env-file config.env up -d --build
+docker compose --env-file config.env ps
 ```
 
-Docker 版启动后不要同时运行 `vm-manager/start_service.sh`，否则两个 VM Manager 会争用宿主机 8760。先验证容器确实连到宿主机 libvirt，并具备创建工具和写入目录：
+Docker 版启动后不要同时运行 `vm-manager/start_service.sh`、
+`diagnostic-gateway/start_diagnostic_service.sh` 或
+`agent-service/start_agent_service.sh`、`docs-service/start_docs_service.sh`，否则会
+争用 8760、8765、8770 或 8780。先验证容器确实连到宿主机 libvirt，并具备创建工具和写入目录：
 
 ```bash
-docker compose exec vm-manager virsh --connect qemu:///system list --all
-docker compose exec vm-manager sh -lc \
+docker compose --env-file config.env exec vm-manager \
+  virsh --connect qemu:///system list --all
+docker compose --env-file config.env exec vm-manager sh -lc \
   'command -v qemu-img && command -v cloud-localds && command -v virt-install'
-docker compose exec vm-manager test -w /var/lib/libvirt/images/aivirteach/labs
-docker compose exec vm-manager test -w /var/lib/aivirteach-labs
+docker compose --env-file config.env exec vm-manager \
+  test -w /var/lib/libvirt/images/aivirteach/labs
+docker compose --env-file config.env exec vm-manager \
+  test -w /var/lib/aivirteach-labs
 ```
 
 调用创建接口后，在宿主机确认 VM，而不是进入容器寻找 QEMU 进程：
@@ -379,6 +455,7 @@ aivirteach-labs/
 │   └── .cache/course/          # 原始和处理后的课程文件（不提交 Git）
 ├── docs-service/               # 8780：无特权统一 API 文档
 │   ├── start_docs_service.sh
+│   ├── unified-docs.Dockerfile # 非 root、只读根文件系统的容器入口
 │   ├── docs_service.py         # 文档页面、健康检查和 OpenAPI 端点
 │   ├── openapi_aggregator.py   # 通过 HTTP 获取并合并三个服务 schema
 │   ├── static/                 # 本地 Swagger UI JS/CSS/图标
@@ -397,7 +474,7 @@ aivirteach-labs/
 | VM Manager | `vm-manager/start_service.sh` | `vm-manager/config/api.env.example` | `vm-manager/libvirt/`、`vm-manager/guacamole/` |
 | Diagnostic Gateway | `diagnostic-gateway/start_diagnostic_service.sh` | `diagnostic-gateway/config/diagnostics.env.example` | libvirt socket、QEMU Guest Agent |
 | Agent Service | `agent-service/start_agent_service.sh` | `agent-service/config/agent.env.example` | `agent-service/aivirteach_agent/`、`agent-service/.cache/course/` |
-| Unified Docs | `docs-service/start_docs_service.sh` | `docs-service/config/docs.env.example` | 三个服务的 `/openapi.json`、本地 Swagger UI 静态资源 |
+| Unified Docs | `docs-service/start_docs_service.sh` / `unified-docs` Compose service | `docs-service/config/docs.env.example` | 三个服务的 `/openapi.json`、本地 Swagger UI 静态资源 |
 | Progress Worker | `progress-worker/start_progress_worker.sh` | `progress-worker/config/progress.env.example` | 8765、Server internal API、SQLite WAL/outbox |
 
 服务间调用方向：

@@ -40,6 +40,7 @@ class UnifiedOpenApiTests(unittest.TestCase):
         self.assertIn("/v1/vms/{lab_id}/status", paths)
         self.assertIn("/v1/diagnostics/{lab_id}/tools/{tool}", paths)
         self.assertIn("/v1/agent/diagnose", paths)
+        self.assertIn("/v1/agent/diagnose/stream", paths)
         self.assertNotIn("/health", paths)
         self.assertNotIn("/ready", paths)
 
