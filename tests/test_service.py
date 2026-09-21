@@ -99,6 +99,51 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["State"], "running")
 
+    async def test_list_vms_returns_names_uuids_and_states(self) -> None:
+        output = (
+            "lab-001\t26a6db7e-1ea7-4de2-9ca3-cf58edbab809\trunning\n"
+            "lab-002\t50eb674a-91b2-4f26-93a9-c11efbaa3327\tshut off"
+        )
+        runner = AsyncMock(return_value=output)
+        with patch.object(service, "run_script", runner):
+            response = await self.client.get("/v1/vms", headers=self.auth)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "count": 2,
+                "vms": [
+                    {
+                        "lab_id": "lab-001",
+                        "vm_instance_id": "26a6db7e-1ea7-4de2-9ca3-cf58edbab809",
+                        "state": "running",
+                    },
+                    {
+                        "lab_id": "lab-002",
+                        "vm_instance_id": "50eb674a-91b2-4f26-93a9-c11efbaa3327",
+                        "state": "shut off",
+                    },
+                ],
+            },
+        )
+        runner.assert_awaited_once_with([service.VM_CONTROL_SCRIPT, "list"])
+
+    async def test_list_vms_rejects_missing_token(self) -> None:
+        response = await self.client.get("/v1/vms")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_list_vms_rejects_malformed_inventory(self) -> None:
+        with patch.object(
+            service,
+            "run_script",
+            AsyncMock(return_value="lab-001\tnot-a-uuid\trunning"),
+        ):
+            response = await self.client.get("/v1/vms", headers=self.auth)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("not-a-uuid", response.text)
+
     async def test_ip_response(self) -> None:
         with patch.object(
             service, "run_script", AsyncMock(return_value="192.168.122.210")

@@ -129,6 +129,12 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/v1/agent/diagnose", json=request_payload())
         self.assertEqual(response.status_code, 401)
 
+        stream_response = await self.client.post(
+            "/v1/agent/diagnose/stream",
+            json=request_payload(),
+        )
+        self.assertEqual(stream_response.status_code, 401)
+
     async def test_swagger_origin_is_allowed_by_cors(self) -> None:
         response = await self.client.options(
             "/v1/agent/diagnose",
@@ -154,6 +160,12 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
             for parameter in operation.get("parameters", [])
         }
         self.assertNotIn("authorization", parameter_names)
+        stream_operation = schema["paths"]["/v1/agent/diagnose/stream"]["post"]
+        self.assertEqual(stream_operation["security"], [{"AgentBearer": []}])
+        self.assertIn(
+            "text/event-stream",
+            stream_operation["responses"]["200"]["content"],
+        )
 
     async def test_fake_provider_smoke_response(self) -> None:
         response = await self.client.post(
@@ -164,6 +176,37 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "completed")
         self.assertIn("FAKE_MODEL_PROVIDER", response.json()["limitations"])
+
+    async def test_sse_stream_emits_progress_and_validated_result(self) -> None:
+        response = await self.client.post(
+            "/v1/agent/diagnose/stream",
+            headers={"Authorization": "Bearer agent-token"},
+            json=request_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        events = _parse_sse(response.text)
+        self.assertEqual(
+            [event for event, _ in events],
+            [
+                "accepted",
+                "started",
+                "context_ready",
+                "reasoning_started",
+                "reasoning_finished",
+                "result",
+                "done",
+            ],
+        )
+        sequences = [payload["sequence"] for _, payload in events]
+        self.assertEqual(sequences, list(range(1, len(events) + 1)))
+        result = next(payload for event, payload in events if event == "result")
+        self.assertEqual(result["response"]["status"], "completed")
+        self.assertIn("FAKE_MODEL_PROVIDER", result["response"]["limitations"])
 
 
 class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
@@ -203,14 +246,27 @@ class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
         orchestrator = AgentOrchestrator(
             settings=settings(), provider=provider, gateway=gateway
         )
+        events: list[tuple[str, dict[str, Any]]] = []
+
+        async def capture(event: str, data: dict[str, Any]) -> None:
+            events.append((event, data))
+
         response = await orchestrator.diagnose(
-            DiagnoseRequest.model_validate(request_payload())
+            DiagnoseRequest.model_validate(request_payload()),
+            on_event=capture,
         )
 
         self.assertEqual(response.status, "completed")
         self.assertEqual(response.evidence[0].id, "obs-001")
         self.assertEqual(gateway.calls[0][1], ToolName.GET_GUEST_SERVICE_STATUS)
         self.assertEqual(response.tool_trace[0].status, "ok")
+        self.assertIn(
+            ("tool_started", {"tool": "get_guest_service_status"}),
+            events,
+        )
+        finished = next(data for event, data in events if event == "tool_finished")
+        self.assertEqual(finished["status"], "ok")
+        self.assertEqual(finished["observation_id"], "obs-001")
 
     async def test_course_scope_denies_resource_before_gateway(self) -> None:
         payload = request_payload()
@@ -399,6 +455,20 @@ class ModelOutputParsingTests(unittest.TestCase):
 
         self.assertEqual(draft.answer, "虚拟机运行正常。")
         self.assertEqual(draft.limitations, ["未检查应用端口。"])
+
+
+def _parse_sse(value: str) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+    for block in value.strip().split("\n\n"):
+        if not block or block.startswith(":"):
+            continue
+        fields = dict(
+            line.split(": ", 1)
+            for line in block.splitlines()
+            if ": " in line
+        )
+        events.append((fields["event"], json.loads(fields["data"])))
+    return events
 
 
 if __name__ == "__main__":

@@ -68,11 +68,34 @@ export AIVIRTEACH_MODEL_PROVIDER="fake"
 ./agent-service/start_agent_service.sh
 ```
 
+To run the Agent, Diagnostic Gateway, and Unified Docs as containers instead,
+use the root Compose file. The Agent is an unprivileged, read-only-root
+container and reaches the Gateway only through the internal Compose DNS name:
+
+```bash
+mkdir -p "agent-service/.cache/course"
+docker compose --env-file config.env up -d --build \
+  diagnostic-service agent-service unified-docs
+curl http://127.0.0.1:8765/ready
+curl http://127.0.0.1:8770/ready
+curl http://127.0.0.1:8780/ready
+```
+
+Use the populated root `config.env`; Compose resolves all required variables in
+the file before selecting services. The Agent and Gateway specifically use the
+full and progress-only Diagnostic tokens plus the Agent token. The same full
+`AIVIRTEACH_DIAGNOSTIC_TOKEN` is injected into both containers. Processed courses are mounted read-only from
+`agent-service/.cache/course` by default; set
+`AIVIRTEACH_COURSE_CACHE_HOST` to use a different host directory. Do not run
+the host scripts for ports 8765, 8770, or 8780 while these containers are active.
+
 Start the standalone unified documentation after the runtime services:
 
 ```bash
 ./docs-service/start_docs_service.sh
 ```
+
+Skip this host command when the Compose `unified-docs` service is running.
 
 After `aivirteach-server` is available, configure and test the background
 Progress Worker. Its Server token must match only its own key in the Server's
@@ -117,8 +140,16 @@ Diagnosis endpoint:
 
 ```text
 POST /v1/agent/diagnose
+POST /v1/agent/diagnose/stream  # SSE
 Authorization: Bearer AIVIRTEACH_AGENT_TOKEN
 ```
+
+The streaming endpoint preserves the same request body and emits bounded SSE
+events: `accepted`, `started`, course/reasoning progress, sanitized
+`tool_started`/`tool_finished`, a final validated `result`, and `done`.
+It never streams raw model reasoning, tool arguments, or raw diagnostic output.
+Use a streaming HTTP client such as `fetch` or `curl -N`; browser
+`EventSource` cannot send this authenticated POST request.
 
 The request must contain `request_id`, `lab_id`, the learner question, compact
 course metadata, a normalized `current_step`, learner state, and an explicit

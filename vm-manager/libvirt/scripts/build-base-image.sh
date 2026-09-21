@@ -6,14 +6,16 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
 FORCE=false
+REFRESH_SOURCE=false
 COURSE_IMAGE_DIR=""
 VALIDATE_ONLY=false
 usage() {
-  echo "Usage: $0 [--force] [--course-image-dir DIR] [--validate-only]"
+  echo "Usage: $0 [--force] [--refresh-source] [--course-image-dir DIR] [--validate-only]"
 }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force) FORCE=true ;;
+    --refresh-source) REFRESH_SOURCE=true ;;
     --validate-only) VALIDATE_ONLY=true ;;
     --course-image-dir)
       [[ $# -ge 2 ]] || die "--course-image-dir requires a directory."
@@ -29,6 +31,8 @@ done
 COURSE_ID=""
 COURSE_BUNDLE_B64=""
 COURSE_BUNDLE_SHA256=""
+BROWSER_SMOKE_SOURCE="${SCRIPT_DIR}/../guest-tools/browser-smoke-test.sh"
+BROWSER_SMOKE_B64=""
 TEMP_FILES=()
 cleanup_temp_files() {
   local path
@@ -183,11 +187,35 @@ require_root_or_sudo
 for cmd in curl qemu-img cloud-localds virt-install virsh openssl sha256sum base64 tar virt-cat; do
   require_command "$cmd"
 done
+[[ -f "$BROWSER_SMOKE_SOURCE" && ! -L "$BROWSER_SMOKE_SOURCE" ]] \
+  || die "Browser smoke test must be a regular project-owned file: $BROWSER_SMOKE_SOURCE"
+bash -n "$BROWSER_SMOKE_SOURCE"
+BROWSER_SMOKE_B64="$(base64 -w0 "$BROWSER_SMOKE_SOURCE")"
 ensure_storage_layout
 ensure_default_network
 
+WALLPAPER_B64=""
+if [[ -n "${WALLPAPER_IMAGE:-}" ]]; then
+  GENERAL_ASSETS_ROOT="$(realpath -e -- "${SCRIPT_DIR}/../general")"
+  WALLPAPER_IMAGE="$(realpath -e -- "$WALLPAPER_IMAGE")"
+  case "${WALLPAPER_IMAGE}" in
+    "${GENERAL_ASSETS_ROOT}/"*) ;;
+    *) die "Wallpaper must be below ${GENERAL_ASSETS_ROOT}." ;;
+  esac
+  [[ -f "$WALLPAPER_IMAGE" && ! -L "$WALLPAPER_IMAGE" ]] \
+    || die "Wallpaper must be a regular file, not a symlink."
+  [[ "$WALLPAPER_IMAGE" =~ \.(jpg|jpeg|png)$ ]] \
+    || die "Wallpaper must use a .jpg, .jpeg, or .png extension."
+  WALLPAPER_BYTES="$(stat -c '%s' "$WALLPAPER_IMAGE")"
+  (( WALLPAPER_BYTES <= 6 * 1024 * 1024 )) \
+    || die "Wallpaper exceeds the 6 MiB cloud-init limit."
+  WALLPAPER_B64="$(base64 -w0 "$WALLPAPER_IMAGE")"
+  (( ${#WALLPAPER_B64} <= 8 * 1024 * 1024 )) \
+    || die "Encoded wallpaper exceeds the 8 MiB cloud-init limit."
+fi
+
 SOURCE_IMAGE="${BASE_DIR}/${UBUNTU_IMAGE_NAME}"
-CHECKSUM_FILE="${BASE_DIR}/SHA256SUMS"
+CHECKSUM_FILE="${BASE_DIR}/SHA256SUMS-${UBUNTU_CODENAME}"
 BUILDER_DISK="${BASE_DIR}/${BUILDER_VM_NAME}.qcow2"
 FINAL_IMAGE="${BASE_DIR}/${GOLDEN_IMAGE_NAME}"
 BUILD_DIR="${SEEDS_DIR}/${BUILDER_VM_NAME}"
@@ -217,17 +245,44 @@ if [[ "$FORCE" == true ]]; then
   as_root rm -rf "$BUILD_DIR"
 fi
 
-log "Downloading Ubuntu ${UBUNTU_RELEASE} released cloud image..."
-as_root curl -fL --retry 4 --retry-delay 3 -o "${SOURCE_IMAGE}.tmp" \
-  "${UBUNTU_IMAGE_BASE_URL}/${UBUNTU_IMAGE_NAME}"
-as_root curl -fL --retry 4 --retry-delay 3 -o "${CHECKSUM_FILE}.tmp" \
-  "${UBUNTU_IMAGE_BASE_URL}/SHA256SUMS"
-as_root mv "${SOURCE_IMAGE}.tmp" "$SOURCE_IMAGE"
-as_root mv "${CHECKSUM_FILE}.tmp" "$CHECKSUM_FILE"
+log "Refreshing Ubuntu ${UBUNTU_RELEASE} checksum metadata..."
+if as_root curl -fL --retry 4 --retry-delay 3 -o "${CHECKSUM_FILE}.tmp" \
+  "${UBUNTU_IMAGE_BASE_URL}/SHA256SUMS"; then
+  as_root mv "${CHECKSUM_FILE}.tmp" "$CHECKSUM_FILE"
+else
+  as_root rm -f "${CHECKSUM_FILE}.tmp"
+  if [[ "$REFRESH_SOURCE" == true || ! -f "$CHECKSUM_FILE" ]]; then
+    die "Unable to refresh Ubuntu checksums and no usable cached checksum file exists."
+  fi
+  warn "Checksum refresh failed; using cached metadata: ${CHECKSUM_FILE}"
+fi
 
-EXPECTED_LINE="$(grep -E "[ *]${UBUNTU_IMAGE_NAME}$" "$CHECKSUM_FILE" | head -n1 || true)"
+EXPECTED_LINE="$(grep -m1 -E "[ *]${UBUNTU_IMAGE_NAME}$" "$CHECKSUM_FILE" || true)"
 [[ -n "$EXPECTED_LINE" ]] || die "Image not found in SHA256SUMS."
-printf '%s\n' "$EXPECTED_LINE" | (cd "$BASE_DIR" && sha256sum --check -)
+EXPECTED_HASH="$(awk '{print $1}' <<< "$EXPECTED_LINE")"
+
+SOURCE_IMAGE_VALID=false
+if [[ "$REFRESH_SOURCE" != true && -f "$SOURCE_IMAGE" ]]; then
+  CACHED_HASH="$(as_root sha256sum "$SOURCE_IMAGE" | awk '{print $1}')"
+  if [[ "$CACHED_HASH" == "$EXPECTED_HASH" ]]; then
+    SOURCE_IMAGE_VALID=true
+    log "Using cached, checksum-verified Ubuntu image: ${SOURCE_IMAGE}"
+  else
+    warn "Cached Ubuntu image checksum changed or is invalid; downloading a fresh copy."
+  fi
+fi
+
+if [[ "$SOURCE_IMAGE_VALID" != true ]]; then
+  log "Downloading Ubuntu ${UBUNTU_RELEASE} released cloud image..."
+  as_root curl -fL --retry 4 --retry-delay 3 -o "${SOURCE_IMAGE}.tmp" \
+    "${UBUNTU_IMAGE_BASE_URL}/${UBUNTU_IMAGE_NAME}"
+  DOWNLOADED_HASH="$(as_root sha256sum "${SOURCE_IMAGE}.tmp" | awk '{print $1}')"
+  if [[ "$DOWNLOADED_HASH" != "$EXPECTED_HASH" ]]; then
+    as_root rm -f "${SOURCE_IMAGE}.tmp"
+    die "Downloaded Ubuntu image checksum mismatch."
+  fi
+  as_root mv "${SOURCE_IMAGE}.tmp" "$SOURCE_IMAGE"
+fi
 
 as_root qemu-img convert -p -O qcow2 "$SOURCE_IMAGE" "$BUILDER_DISK"
 as_root qemu-img resize "$BUILDER_DISK" "$GOLDEN_IMAGE_SIZE"
@@ -259,6 +314,8 @@ set -Eeuo pipefail
 
 remove_publish_markers() {
   rm -f \
+    /etc/aivirteach/browser-ready \
+    /etc/aivirteach/browser-ready.tmp \
     /etc/aivirteach/image-ready \
     /etc/aivirteach/image-ready.tmp \
     /etc/aivirteach/course-image-ready \
@@ -272,7 +329,57 @@ echo 'lightdm shared/default-x-display-manager select lightdm' \
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11 qemu-guest-agent \
-  openssh-server git curl wget vim python3 python3-venv python3-pip
+  openssh-server ca-certificates curl git gnupg vim wget \
+  python3 python3-venv python3-pip
+
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg \
+  -o /etc/apt/keyrings/packages.mozilla.org.asc
+chmod 0644 /etc/apt/keyrings/packages.mozilla.org.asc
+mozilla_key_fingerprint="$(
+  gpg --batch --quiet --show-keys --with-colons \
+    /etc/apt/keyrings/packages.mozilla.org.asc \
+    | awk -F: '$1 == "fpr" {print toupper($10); exit}'
+)"
+[[ "$mozilla_key_fingerprint" == "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3" ]] \
+  || {
+    echo "Mozilla repository signing-key fingerprint mismatch." >&2
+    exit 1
+  }
+
+cat > /etc/apt/sources.list.d/mozilla.list <<'MOZILLAREPO'
+deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
+MOZILLAREPO
+cat > /etc/apt/preferences.d/mozilla <<'MOZILLAPIN'
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+
+Package: firefox
+Pin: release o=Ubuntu
+Pin-Priority: -1
+MOZILLAPIN
+
+apt-get update
+if command -v snap >/dev/null 2>&1 && snap list firefox >/dev/null 2>&1; then
+  snap remove firefox
+fi
+DEBIAN_FRONTEND=noninteractive apt-get install -y firefox
+update-alternatives --install \
+  /usr/bin/x-www-browser x-www-browser /usr/bin/firefox 200
+update-alternatives --set x-www-browser /usr/bin/firefox
+
+install -d -m 0755 /etc/xdg/xfce4
+touch /etc/xdg/xfce4/helpers.rc
+sed -i '/^WebBrowser=/d' /etc/xdg/xfce4/helpers.rc
+printf '%s\n' 'WebBrowser=firefox' >> /etc/xdg/xfce4/helpers.rc
+cat > /etc/xdg/mimeapps.list <<'MIMEAPPS'
+[Default Applications]
+text/html=firefox.desktop
+x-scheme-handler/http=firefox.desktop
+x-scheme-handler/https=firefox.desktop
+MIMEAPPS
+
 install -d -m 0755 /etc/aivirteach /opt/aivirteach /home/learner/course
 printf '%s\n' \
   'unset DBUS_SESSION_BUS_ADDRESS' \
@@ -298,10 +405,178 @@ rm -rf /opt/aivirteach/course-image
 COURSEBUILD
 fi
 
+if [[ -n "$WALLPAPER_B64" ]]; then
+  cat >> "$BUILD_SCRIPT_TMP" <<'WALLPAPERBUILD'
+install -d -m 0755 /usr/share/backgrounds/aivirteach /usr/local/lib/aivirteach
+install -m 0644 /var/tmp/aivirteach-wallpaper \
+  /usr/share/backgrounds/aivirteach/wallpaper.jpg
+
+cat > /usr/local/lib/aivirteach/set-wallpaper.sh <<'SETWALLPAPER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+wallpaper="/usr/share/backgrounds/aivirteach/wallpaper.jpg"
+marker="${HOME}/.config/aivirteach/wallpaper-v3-prefixes"
+[[ -f "$wallpaper" ]] || exit 0
+
+set_scalar_property() {
+  local property="$1"
+  local type="$2"
+  local value="$3"
+  if xfconf-query -c xfce4-desktop -p "$property" >/dev/null 2>&1; then
+    xfconf-query -c xfce4-desktop -p "$property" -s "$value"
+  else
+    xfconf-query -c xfce4-desktop -p "$property" -n -t "$type" -s "$value"
+  fi
+}
+
+set_white_rgba() {
+  local property="$1"
+  xfconf-query -c xfce4-desktop -p "$property" -r >/dev/null 2>&1 || true
+  xfconf-query -c xfce4-desktop -p "$property" -n -a \
+    -t double -s 1 \
+    -t double -s 1 \
+    -t double -s 1 \
+    -t double -s 1
+}
+
+for _attempt in 1 2 3 4 5; do
+  image_properties="$(
+    xfconf-query -c xfce4-desktop -l 2>/dev/null \
+      | grep -E '/(last-image|image-path)$' || true
+  )"
+  if [[ -n "$image_properties" ]]; then
+    declare -A configured_backdrops=()
+    while IFS= read -r property; do
+      [[ -n "$property" ]] || continue
+      backdrop="${property%/*}"
+      [[ -z "${configured_backdrops[$backdrop]+configured}" ]] || continue
+      configured_backdrops["$backdrop"]=1
+      grep -Fxq -- "$backdrop" "$marker" 2>/dev/null && continue
+      set_scalar_property "$property" string "$wallpaper"
+      set_scalar_property "${backdrop}/image-style" int 4
+      set_scalar_property "${backdrop}/color-style" int 0
+      set_white_rgba "${backdrop}/rgba1"
+      set_white_rgba "${backdrop}/rgba2"
+      set_scalar_property "${backdrop}/backdrop-cycle-enable" bool false
+      mkdir -p "$(dirname "$marker")"
+      printf '%s\n' "$backdrop" >> "$marker"
+    done <<< "$image_properties"
+    [[ ! -f "$marker" ]] || sort -u -o "$marker" "$marker"
+    xfdesktop --reload >/dev/null 2>&1 || true
+    exit 0
+  fi
+  sleep 2
+done
+SETWALLPAPER
+chmod 0755 /usr/local/lib/aivirteach/set-wallpaper.sh
+
+# Seed the common XRDP and virtio monitor names so the first desktop frame
+# already uses the branded background. The autostart script above handles any
+# runtime monitor/workspace names that XFCE creates later.
+install -d -m 0755 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml
+cat > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml <<'XFCEDEFAULTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitorrdp0" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="4"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/aivirteach/wallpaper.jpg"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+          </property>
+          <property name="rgba2" type="array">
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+          </property>
+          <property name="backdrop-cycle-enable" type="bool" value="false"/>
+        </property>
+      </property>
+      <property name="monitorVirtual-1" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="color-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="4"/>
+          <property name="last-image" type="string" value="/usr/share/backgrounds/aivirteach/wallpaper.jpg"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+          </property>
+          <property name="rgba2" type="array">
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+            <value type="double" value="1"/>
+          </property>
+          <property name="backdrop-cycle-enable" type="bool" value="false"/>
+        </property>
+      </property>
+    </property>
+  </property>
+</channel>
+XFCEDEFAULTS
+chmod 0644 /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml
+
+install -d -m 0755 /etc/xdg/autostart
+cat > /etc/xdg/autostart/aivirteach-wallpaper.desktop <<'WALLPAPERDESKTOP'
+[Desktop Entry]
+Type=Application
+Name=AIVirTeach Wallpaper
+Exec=/usr/local/lib/aivirteach/set-wallpaper.sh
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true
+Terminal=false
+WALLPAPERDESKTOP
+chmod 0644 /etc/xdg/autostart/aivirteach-wallpaper.desktop
+
+install -d -m 0755 /etc/lightdm/lightdm-gtk-greeter.conf.d
+cat > /etc/lightdm/lightdm-gtk-greeter.conf.d/50-aivirteach-wallpaper.conf <<'LIGHTDMBACKGROUND'
+[greeter]
+background=/usr/share/backgrounds/aivirteach/wallpaper.jpg
+LIGHTDMBACKGROUND
+chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf.d/50-aivirteach-wallpaper.conf
+WALLPAPERBUILD
+fi
+
 cat >> "$BUILD_SCRIPT_TMP" <<'BUILDCLEAN'
 if [[ -x /usr/local/sbin/aivirteach-customize ]]; then
   /usr/local/sbin/aivirteach-customize
 fi
+
+browser_binary="$(command -v firefox || true)"
+[[ "$browser_binary" == "/usr/bin/firefox" ]]
+browser_realpath="$(readlink -f "$browser_binary")"
+[[ "$browser_realpath" != /snap/* ]]
+[[ "$(dpkg-query -W -f='${Status}' firefox 2>/dev/null)" == "install ok installed" ]]
+if command -v snap >/dev/null 2>&1; then
+  ! snap list firefox >/dev/null 2>&1
+fi
+firefox_policy="$(apt-cache policy firefox)"
+grep -Fq 'https://packages.mozilla.org/apt' <<< "$firefox_policy"
+[[ "$(readlink -f /etc/alternatives/x-www-browser)" == "$browser_realpath" ]]
+[[ -x /usr/local/bin/aivirteach-browser-smoke-test ]]
+bash -n /usr/local/bin/aivirteach-browser-smoke-test
+browser_version="$(dpkg-query -W -f='${Version}' firefox)"
+/usr/bin/firefox --version
+printf '%s\n' \
+  'browser=firefox' \
+  'packaging=deb' \
+  "version=${browser_version}" \
+  'binary=/usr/bin/firefox' \
+  'source=packages.mozilla.org' \
+  > /etc/aivirteach/browser-ready.tmp
+chmod 0444 /etc/aivirteach/browser-ready.tmp
+mv /etc/aivirteach/browser-ready.tmp /etc/aivirteach/browser-ready
+
 passwd -l learner || true
 apt-get clean
 rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/*
@@ -393,6 +668,11 @@ write_files:
     permissions: "0700"
     encoding: b64
     content: ${BUILD_SCRIPT_B64}
+  - path: /usr/local/bin/aivirteach-browser-smoke-test
+    owner: root:root
+    permissions: "0755"
+    encoding: b64
+    content: ${BROWSER_SMOKE_B64}
 CLOUDCFG
 
 if [[ -n "$CUSTOM_B64" ]]; then
@@ -403,6 +683,16 @@ if [[ -n "$CUSTOM_B64" ]]; then
     encoding: b64
     content: ${CUSTOM_B64}
 CUSTOMCFG
+fi
+
+if [[ -n "$WALLPAPER_B64" ]]; then
+  cat >> "$USER_DATA_TMP" <<WALLPAPERCFG
+  - path: /var/tmp/aivirteach-wallpaper
+    owner: root:root
+    permissions: "0600"
+    encoding: b64
+    content: ${WALLPAPER_B64}
+WALLPAPERCFG
 fi
 
 if [[ -n "$COURSE_BUNDLE_B64" ]]; then
@@ -483,6 +773,13 @@ IMAGE_READY="$(as_root virt-cat -c qemu:///system -d "$BUILDER_VM_NAME" \
   /etc/aivirteach/image-ready 2>/dev/null || true)"
 [[ "$IMAGE_READY" == "$GOLDEN_IMAGE_NAME" ]] \
   || die "Golden image completion marker is missing or invalid; refusing to publish it."
+BROWSER_READY="$(as_root virt-cat -c qemu:///system -d "$BUILDER_VM_NAME" \
+  /etc/aivirteach/browser-ready 2>/dev/null || true)"
+grep -Fxq 'browser=firefox' <<< "$BROWSER_READY" \
+  && grep -Fxq 'packaging=deb' <<< "$BROWSER_READY" \
+  && grep -Fxq 'binary=/usr/bin/firefox' <<< "$BROWSER_READY" \
+  && grep -Fxq 'source=packages.mozilla.org' <<< "$BROWSER_READY" \
+  || die "Browser completion marker is missing or invalid; refusing to publish the image."
 if [[ -n "$COURSE_ID" ]]; then
   COURSE_READY="$(as_root virt-cat -c qemu:///system -d "$BUILDER_VM_NAME" \
     /etc/aivirteach/course-image-ready 2>/dev/null || true)"

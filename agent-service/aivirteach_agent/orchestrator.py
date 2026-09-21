@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -18,6 +19,7 @@ from .models import (
     DiagnoseResponse,
     Diagnosis,
     Evidence,
+    ToolName,
     ToolTrace,
 )
 from .prompts import FINALIZATION_PROMPT, initial_messages
@@ -31,6 +33,8 @@ from .tools import (
     tool_cache_key,
     validate_tool_call,
 )
+
+ProgressCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class AgentOrchestrator:
@@ -47,9 +51,22 @@ class AgentOrchestrator:
         self._gateway = gateway
         self._course_repository = course_repository
 
-    async def diagnose(self, request: DiagnoseRequest) -> DiagnoseResponse:
+    async def diagnose(
+        self,
+        request: DiagnoseRequest,
+        *,
+        on_event: ProgressCallback | None = None,
+    ) -> DiagnoseResponse:
         if self._course_repository is not None:
             request = self._course_repository.enrich(request)
+        await _emit(
+            on_event,
+            "context_ready",
+            {
+                "course_id": request.course.course_id,
+                "lesson_id": request.current_step.lesson_id,
+            },
+        )
         evidence: list[Evidence] = []
         traces: list[ToolTrace] = []
         limitations: list[str] = []
@@ -61,15 +78,39 @@ class AgentOrchestrator:
 
         try:
             async with asyncio.timeout(self._settings.total_timeout_seconds):
-                for _ in range(self._settings.max_reasoning_turns):
+                for turn_index in range(self._settings.max_reasoning_turns):
+                    turn_number = turn_index + 1
+                    await _emit(
+                        on_event,
+                        "reasoning_started",
+                        {"turn": turn_number},
+                    )
                     turn = await self._model_turn(
                         messages,
                         available_provider_tools(request.diagnostic_scope),
                     )
                     if not turn.tool_calls:
+                        await _emit(
+                            on_event,
+                            "reasoning_finished",
+                            {
+                                "turn": turn_number,
+                                "outcome": "answer_ready",
+                                "tool_call_count": 0,
+                            },
+                        )
                         final_turn = turn
                         break
 
+                    await _emit(
+                        on_event,
+                        "reasoning_finished",
+                        {
+                            "turn": turn_number,
+                            "outcome": "tools_requested",
+                            "tool_call_count": len(turn.tool_calls),
+                        },
+                    )
                     messages.append(
                         ProviderMessage(
                             role="assistant",
@@ -79,6 +120,7 @@ class AgentOrchestrator:
                     )
                     for call in turn.tool_calls:
                         started = time.monotonic()
+                        event_tool = _safe_event_tool_name(call.name)
                         if tool_calls_used >= self._settings.max_tool_calls:
                             partial = True
                             limitations.append("TOOL_CALL_BUDGET_EXHAUSTED")
@@ -95,6 +137,16 @@ class AgentOrchestrator:
                                     error_code="TOOL_CALL_BUDGET_EXHAUSTED",
                                 )
                             )
+                            await _emit(
+                                on_event,
+                                "tool_finished",
+                                {
+                                    "tool": event_tool,
+                                    "status": "denied",
+                                    "duration_ms": _elapsed_ms(started),
+                                    "error_code": "TOOL_CALL_BUDGET_EXHAUSTED",
+                                },
+                            )
                             messages.append(_tool_message(call.id, error))
                             continue
 
@@ -104,6 +156,12 @@ class AgentOrchestrator:
                                 call.name,
                                 call.arguments,
                                 request.diagnostic_scope,
+                            )
+                            event_tool = tool.value
+                            await _emit(
+                                on_event,
+                                "tool_started",
+                                {"tool": event_tool},
                             )
                             cache_key = tool_cache_key(tool, arguments)
                             if cache_key in cache:
@@ -115,6 +173,16 @@ class AgentOrchestrator:
                                         duration_ms=_elapsed_ms(started),
                                         observation_id=cached_evidence.id,
                                     )
+                                )
+                                await _emit(
+                                    on_event,
+                                    "tool_finished",
+                                    {
+                                        "tool": event_tool,
+                                        "status": "cached",
+                                        "duration_ms": _elapsed_ms(started),
+                                        "observation_id": cached_evidence.id,
+                                    },
                                 )
                                 messages.append(_tool_message(call.id, cached_payload))
                                 continue
@@ -155,6 +223,16 @@ class AgentOrchestrator:
                                     observation_id=observation.id,
                                 )
                             )
+                            await _emit(
+                                on_event,
+                                "tool_finished",
+                                {
+                                    "tool": event_tool,
+                                    "status": "ok",
+                                    "duration_ms": _elapsed_ms(started),
+                                    "observation_id": observation.id,
+                                },
+                            )
                             if truncated:
                                 partial = True
                                 limitations.append("TOOL_OUTPUT_TRUNCATED")
@@ -168,6 +246,16 @@ class AgentOrchestrator:
                                     duration_ms=_elapsed_ms(started),
                                     error_code=exc.code,
                                 )
+                            )
+                            await _emit(
+                                on_event,
+                                "tool_finished",
+                                {
+                                    "tool": event_tool,
+                                    "status": "denied",
+                                    "duration_ms": _elapsed_ms(started),
+                                    "error_code": exc.code,
+                                },
                             )
                             messages.append(
                                 _tool_message(
@@ -186,6 +274,16 @@ class AgentOrchestrator:
                                     error_code=exc.code,
                                 )
                             )
+                            await _emit(
+                                on_event,
+                                "tool_finished",
+                                {
+                                    "tool": event_tool,
+                                    "status": "error",
+                                    "duration_ms": _elapsed_ms(started),
+                                    "error_code": exc.code,
+                                },
+                            )
                             messages.append(
                                 _tool_message(
                                     call.id,
@@ -203,6 +301,16 @@ class AgentOrchestrator:
                                     error_code="TOOL_TIMEOUT",
                                 )
                             )
+                            await _emit(
+                                on_event,
+                                "tool_finished",
+                                {
+                                    "tool": event_tool,
+                                    "status": "error",
+                                    "duration_ms": _elapsed_ms(started),
+                                    "error_code": "TOOL_TIMEOUT",
+                                },
+                            )
                             messages.append(
                                 _tool_message(
                                     call.id,
@@ -213,6 +321,11 @@ class AgentOrchestrator:
                 if final_turn is None:
                     partial = True
                     limitations.append("REASONING_TURN_BUDGET_EXHAUSTED")
+                    await _emit(
+                        on_event,
+                        "finalization_started",
+                        {"reason": "reasoning_turn_budget_exhausted"},
+                    )
                     messages.append(ProviderMessage(role="user", content=FINALIZATION_PROMPT))
                     final_turn = await self._model_turn(messages, [])
         except TimeoutError:
@@ -339,3 +452,19 @@ def _evidence_summary(raw: dict[str, Any], fallback: str) -> str:
     if isinstance(summary, str) and summary.strip():
         return summary[:1_000]
     return f"{fallback} returned a read-only observation."
+
+
+async def _emit(
+    callback: ProgressCallback | None,
+    event: str,
+    data: dict[str, Any],
+) -> None:
+    if callback is not None:
+        await callback(event, data)
+
+
+def _safe_event_tool_name(value: str) -> str:
+    try:
+        return ToolName(value).value
+    except ValueError:
+        return "invalid_tool"

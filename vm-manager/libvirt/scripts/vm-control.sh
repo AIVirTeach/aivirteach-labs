@@ -5,9 +5,28 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
-usage() { echo "Usage: $0 {start|stop|force-stop|reboot|status|ip|vnc|credentials|delete} LAB_ID [--yes]"; }
-[[ $# -ge 2 ]] || { usage; exit 1; }
-ACTION="$1"; LAB_ID="$2"; shift 2
+usage() { echo "Usage: $0 list | {start|stop|force-stop|reboot|status|ip|vnc|credentials|delete} LAB_ID [--yes]"; }
+[[ $# -ge 1 ]] || { usage; exit 1; }
+ACTION="$1"; shift
+
+if [[ "$ACTION" == "list" ]]; then
+  [[ $# -eq 0 ]] || { usage; exit 1; }
+  require_root_or_sudo
+  while IFS= read -r VM_NAME; do
+    [[ -n "$VM_NAME" ]] || continue
+    if ! VM_UUID="$(as_root virsh --connect qemu:///system domuuid "$VM_NAME" 2>/dev/null)"; then
+      # A domain can disappear between list and domuuid; omit that stale row.
+      continue
+    fi
+    VM_STATE="$(as_root virsh --connect qemu:///system domstate "$VM_NAME" 2>/dev/null || printf 'unknown')"
+    VM_STATE="${VM_STATE%%$'\n'*}"
+    printf '%s\t%s\t%s\n' "$VM_NAME" "$VM_UUID" "$VM_STATE"
+  done < <(as_root virsh --connect qemu:///system list --all --name | sed '/^$/d' | LC_ALL=C sort)
+  exit 0
+fi
+
+[[ $# -ge 1 ]] || { usage; exit 1; }
+LAB_ID="$1"; shift
 validate_lab_id "$LAB_ID"
 CONFIRM=false
 [[ "${1:-}" == "--yes" ]] && CONFIRM=true

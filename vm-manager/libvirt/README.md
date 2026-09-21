@@ -84,17 +84,39 @@ CUSTOMIZE_SCRIPT="/absolute/path/to/customize-image.sh"
 
 Never embed production tokens or private keys in the golden image.
 
+The general image can also install a project-owned JPG or PNG as both the XFCE
+desktop wallpaper and LightDM background. Keep the asset under `general/` and
+set, for example:
+
+```bash
+WALLPAPER_IMAGE="${MODULE_DIR}/general/logo.jpg"
+GOLDEN_IMAGE_NAME="ubuntu-24.04-xfce-xrdp-v3.qcow2"
+```
+
+The image is shown with XFCE's **Scaled** style over a solid white background;
+wallpaper cycling is disabled. Defaults for the common XRDP and virtio monitor
+names are seeded before first login, then a one-time login helper updates every
+runtime monitor/workspace property that XFCE creates. Learners may change the
+wallpaper afterward.
+
 ## 3. Build the golden qcow2 image
 
 ```bash
 ./scripts/build-base-image.sh
 ```
 
-The script downloads the current released Ubuntu 24.04 cloud image, verifies `SHA256SUMS`, starts a builder VM, installs XFCE/XRDP, cleans clone-specific identity, powers off, and publishes:
+The script downloads the current released Ubuntu 24.04 cloud image, verifies
+`SHA256SUMS`, starts a builder VM, installs XFCE/XRDP and Mozilla's signed
+Firefox DEB package, validates that Firefox is not a Snap, cleans clone-specific
+identity, powers off, and publishes:
 
 ```text
-/var/lib/libvirt/images/aivirteach/base/ubuntu-24.04-xfce-xrdp-v1.qcow2
+/var/lib/libvirt/images/aivirteach/base/ubuntu-24.04-xfce-xrdp-v3.qcow2
 ```
+
+The build refuses to publish unless `/etc/aivirteach/browser-ready` records a
+Firefox DEB from `packages.mozilla.org`. The Mozilla signing key is also checked
+against the expected fingerprint during the build.
 
 Monitor:
 
@@ -109,6 +131,46 @@ Force rebuild:
 
 ```bash
 ./scripts/build-base-image.sh --force
+```
+
+The downloaded Ubuntu cloud image is cached under `BASE_DIR`. Every build
+refreshes only the small codename-specific checksum file and verifies the local
+image. If the checksum matches, `--force` reuses the cached image instead of
+downloading it again. To intentionally fetch a fresh source image, use:
+
+```bash
+./scripts/build-base-image.sh --force --refresh-source
+```
+
+If checksum metadata cannot be refreshed, the normal mode may use previously
+cached metadata; `--refresh-source` always fails closed instead of trusting a
+stale checksum.
+
+Do not force-replace a base image while learner overlays depend on it. Use a new
+versioned filename instead.
+
+### Browser acceptance test
+
+After creating and starting a new learner VM from v3, run inside that VM:
+
+```bash
+cat /etc/aivirteach/browser-ready
+/usr/local/bin/aivirteach-browser-smoke-test
+```
+
+The smoke test runs as `learner` even when invoked by the root QEMU Guest Agent,
+rejects Snap Firefox, and uses headless Firefox to render `https://example.com/`.
+A successful result starts with:
+
+```text
+browser_smoke_status=passed
+```
+
+From the host, confirm that the new overlay actually uses v3:
+
+```bash
+sudo qemu-img info /var/lib/libvirt/images/aivirteach/labs/LAB_ID.qcow2 \
+  | grep 'backing file'
 ```
 
 The build script refuses `--force` while any learner overlays exist. Publish versioned images instead of replacing an in-use base.
