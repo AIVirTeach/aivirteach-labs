@@ -37,6 +37,9 @@ class UnifiedOpenApiTests(unittest.TestCase):
 
     def test_docs_include_all_three_service_apis(self) -> None:
         paths = self.schema["paths"]
+        self.assertIn("/v1/vms", paths)
+        self.assertIn("get", paths["/v1/vms"])
+        self.assertIn("post", paths["/v1/vms"])
         self.assertIn("/v1/vms/{lab_id}/status", paths)
         self.assertIn("/v1/diagnostics/{lab_id}/tools/{tool}", paths)
         self.assertIn("/v1/agent/diagnose", paths)

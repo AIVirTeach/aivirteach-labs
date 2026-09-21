@@ -109,6 +109,7 @@ The VM Manager wraps the scripts under `vm-manager/libvirt/`. It serializes
 mutating operations per `lab_id`, validates identifiers, applies command
 timeouts, and exposes:
 
+- `GET /v1/vms`
 - `POST /v1/vms`
 - `GET /v1/vms/{lab_id}/status`
 - `GET /v1/vms/{lab_id}/ip`

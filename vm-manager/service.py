@@ -100,6 +100,17 @@ class OperationResponse(BaseModel):
     message: str
 
 
+class VMListItem(BaseModel):
+    lab_id: str = Field(description="libvirt domain name used by Labs APIs")
+    vm_instance_id: str = Field(description="Immutable libvirt domain UUID")
+    state: str = Field(description="Current libvirt domain state")
+
+
+class VMListResponse(BaseModel):
+    count: int = Field(ge=0)
+    vms: list[VMListItem]
+
+
 class BrowserSessionRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._@-]+$")
 
@@ -267,6 +278,37 @@ def _parse_dominfo(output: str) -> dict[str, str]:
     return _parse_key_value_lines(output, separator=":")
 
 
+def _parse_vm_list(output: str) -> list[VMListItem]:
+    vms: list[VMListItem] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="VM inventory returned an invalid row.",
+            )
+        lab_id, vm_instance_id, vm_state = (field.strip() for field in fields)
+        if (
+            not lab_id
+            or not VM_INSTANCE_ID_RE.fullmatch(vm_instance_id)
+            or not vm_state
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="VM inventory returned invalid identity data.",
+            )
+        vms.append(
+            VMListItem(
+                lab_id=lab_id,
+                vm_instance_id=vm_instance_id,
+                state=vm_state,
+            )
+        )
+    return vms
+
+
 async def _rdp_ready(ip_address: str, port: int) -> bool:
     try:
         _, writer = await asyncio.wait_for(
@@ -427,6 +469,20 @@ async def create_vm(request: CreateVMRequest) -> dict[str, str | int | bool]:
         "vcpus": request.vcpus,
         "autostart": request.autostart,
     }
+
+
+@app.get(
+    "/v1/vms",
+    response_model=VMListResponse,
+    dependencies=[Depends(require_api_token)],
+    tags=["vms"],
+    summary="List all virtual machine IDs",
+)
+async def list_vms() -> VMListResponse:
+    """Return every libvirt domain name, immutable UUID, and current state."""
+
+    vms = _parse_vm_list(await run_script([VM_CONTROL_SCRIPT, "list"]))
+    return VMListResponse(count=len(vms), vms=vms)
 
 
 @app.get(

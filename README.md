@@ -160,6 +160,7 @@ http://127.0.0.1:8770/docs  # Agent Service 自身文档
 
 ```text
 GET    /health
+GET    /v1/vms                              # 列出 lab_id、VM UUID 和状态
 POST   /v1/vms
 GET    /v1/vms/{lab_id}/status
 GET    /v1/vms/{lab_id}/ip
@@ -211,6 +212,16 @@ Swagger 右上角的 **Authorize** 会分别显示 Admin、Session、Diagnostic 
 curl -H "Authorization: Bearer $AIVIRTEACH_API_TOKEN" \
   http://127.0.0.1:8760/v1/vms/lab-001/ip
 ```
+
+在 VM Manager 或 Unified Docs 中查看全部 VM ID：
+
+```bash
+curl -H "Authorization: Bearer $AIVIRTEACH_API_TOKEN" \
+  http://127.0.0.1:8760/v1/vms
+```
+
+响应同时提供 Labs 使用的 `lab_id`、防止同名 VM 重建混淆的不可变
+`vm_instance_id`（libvirt UUID），以及当前运行状态。
 
 只读诊断调用示例：
 
