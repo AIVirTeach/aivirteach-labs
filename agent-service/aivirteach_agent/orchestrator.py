@@ -22,8 +22,14 @@ from .models import (
     ToolName,
     ToolTrace,
 )
-from .prompts import FINALIZATION_PROMPT, initial_messages
-from .providers import ModelProvider, ProviderMessage, ProviderTurn
+from .prompts import FINALIZATION_PROMPT, answer_render_messages, initial_messages
+from .providers import (
+    ModelProvider,
+    ProviderMessage,
+    ProviderStreamDone,
+    ProviderTextDelta,
+    ProviderTurn,
+)
 from .providers.base import ProviderError
 from .security import sanitize_value
 from .tools import (
@@ -35,6 +41,7 @@ from .tools import (
 )
 
 ProgressCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+MAX_STREAM_ANSWER_CHARS = 12_000
 
 
 class AgentOrchestrator:
@@ -344,6 +351,81 @@ class AgentOrchestrator:
             limitations=limitations,
             partial=partial,
         )
+
+    async def diagnose_stream(
+        self,
+        request: DiagnoseRequest,
+        *,
+        on_event: ProgressCallback,
+    ) -> DiagnoseResponse:
+        """Diagnose first, then stream a safe learner-facing final answer."""
+        response = await self.diagnose(request, on_event=on_event)
+        await _emit(on_event, "answer_started", {"phase": "final_answer"})
+
+        answer_parts: list[str] = []
+        answer_chars = 0
+        finish_reason: str | None = None
+        stream_error: str | None = None
+        try:
+            async with asyncio.timeout(self._settings.model_timeout_seconds):
+                async for event in self._provider.stream_complete(
+                    messages=answer_render_messages(request, response),
+                    tools=(),
+                ):
+                    if isinstance(event, ProviderStreamDone):
+                        finish_reason = event.finish_reason
+                        continue
+                    if not isinstance(event, ProviderTextDelta) or not event.text:
+                        continue
+
+                    remaining = MAX_STREAM_ANSWER_CHARS - answer_chars
+                    if remaining <= 0:
+                        stream_error = "MODEL_STREAM_OUTPUT_TRUNCATED"
+                        break
+                    delta = event.text[:remaining]
+                    answer_parts.append(delta)
+                    answer_chars += len(delta)
+                    await _emit(on_event, "assistant_delta", {"delta": delta})
+                    if len(delta) != len(event.text):
+                        stream_error = "MODEL_STREAM_OUTPUT_TRUNCATED"
+                        break
+        except TimeoutError:
+            stream_error = "MODEL_STREAM_TIMEOUT"
+        except ProviderError:
+            stream_error = "MODEL_STREAM_ERROR"
+
+        streamed_answer = "".join(answer_parts)
+        if stream_error is None and not streamed_answer.strip():
+            stream_error = "MODEL_STREAM_EMPTY"
+        if stream_error is None and finish_reason != "stop":
+            stream_error = "MODEL_STREAM_INCOMPLETE"
+
+        if stream_error is not None:
+            limitations = list(dict.fromkeys([*response.limitations, stream_error]))
+            await _emit(on_event, "answer_failed", {"code": stream_error})
+            await _emit(
+                on_event,
+                "answer_finished",
+                {
+                    "status": "fallback",
+                    "character_count": len(streamed_answer),
+                    "finish_reason": finish_reason or "unknown",
+                },
+            )
+            return response.model_copy(
+                update={"status": "partial", "limitations": limitations}
+            )
+
+        await _emit(
+            on_event,
+            "answer_finished",
+            {
+                "status": "completed",
+                "character_count": len(streamed_answer),
+                "finish_reason": finish_reason,
+            },
+        )
+        return response.model_copy(update={"answer": streamed_answer})
 
     async def _model_turn(self, messages: list[ProviderMessage], tools: list[Any]) -> ProviderTurn:
         try:

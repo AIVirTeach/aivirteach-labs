@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 
 class ProviderError(RuntimeError):
@@ -37,6 +38,23 @@ class ProviderTurn:
     finish_reason: str = "stop"
 
 
+@dataclass(frozen=True)
+class ProviderTextDelta:
+    """A user-visible text fragment from a streaming model response."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class ProviderStreamDone:
+    """The terminal event for a streaming model response."""
+
+    finish_reason: str = "stop"
+
+
+ProviderStreamEvent = ProviderTextDelta | ProviderStreamDone
+
+
 class ModelProvider(Protocol):
     async def complete(
         self,
@@ -44,5 +62,12 @@ class ModelProvider(Protocol):
         messages: Sequence[ProviderMessage],
         tools: Sequence[ProviderTool],
     ) -> ProviderTurn: ...
+
+    def stream_complete(
+        self,
+        *,
+        messages: Sequence[ProviderMessage],
+        tools: Sequence[ProviderTool],
+    ) -> AsyncIterator[ProviderStreamEvent]: ...
 
     async def aclose(self) -> None: ...

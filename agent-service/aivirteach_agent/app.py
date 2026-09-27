@@ -160,7 +160,10 @@ def create_app(
         tags=["agent"],
         responses={
             200: {
-                "description": "SSE progress events followed by a validated result event.",
+                "description": (
+                    "SSE progress and assistant_delta events followed by a "
+                    "validated result event."
+                ),
                 "content": {
                     "text/event-stream": {
                         "schema": {"type": "string"},
@@ -178,22 +181,31 @@ def create_app(
             )
 
         request_id = str(request.request_id)
-        queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue()
+        queue: asyncio.Queue[tuple[str, dict[str, Any]] | None] = asyncio.Queue(
+            maxsize=64
+        )
 
         async def publish(event: str, data: dict[str, Any]) -> None:
-            queue.put_nowait((event, data))
+            # A bounded queue propagates backpressure to the upstream model
+            # stream when a browser or proxy consumes SSE slowly.
+            await queue.put((event, data))
 
         async def produce() -> None:
+            cancelled = False
             try:
                 async with request_slots:
                     await publish("started", {"phase": "diagnosis"})
-                    result = await orchestrator.diagnose(request, on_event=publish)
+                    result = await orchestrator.diagnose_stream(
+                        request,
+                        on_event=publish,
+                    )
                 await publish(
                     "result",
                     {"response": result.model_dump(mode="json")},
                 )
                 await publish("done", {"status": result.status})
             except asyncio.CancelledError:
+                cancelled = True
                 raise
             except Exception:
                 LOG.exception("diagnosis stream failed for request %s", request_id)
@@ -205,7 +217,10 @@ def create_app(
                     },
                 )
             finally:
-                queue.put_nowait(None)
+                # No consumer remains after cancellation, so a full queue must
+                # not keep the cancelled producer alive while trying to signal EOF.
+                if not cancelled:
+                    await queue.put(None)
 
         async def events() -> AsyncIterator[str]:
             sequence = 0

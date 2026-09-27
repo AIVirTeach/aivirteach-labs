@@ -15,6 +15,8 @@ from aivirteach_agent.providers import (
     FakeProvider,
     OpenAICompatibleProvider,
     ProviderMessage,
+    ProviderStreamDone,
+    ProviderTextDelta,
     ProviderTool,
     ProviderToolCall,
     ProviderTurn,
@@ -189,24 +191,44 @@ class AgentApiTests(unittest.IsolatedAsyncioTestCase):
             response.headers["content-type"].startswith("text/event-stream")
         )
         self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
         events = _parse_sse(response.text)
+        event_names = [event for event, _ in events]
         self.assertEqual(
-            [event for event, _ in events],
+            event_names[:6],
             [
                 "accepted",
                 "started",
                 "context_ready",
                 "reasoning_started",
                 "reasoning_finished",
-                "result",
-                "done",
+                "answer_started",
             ],
         )
+        self.assertEqual(event_names[-3:], ["answer_finished", "result", "done"])
+        self.assertGreater(event_names.count("assistant_delta"), 1)
         sequences = [payload["sequence"] for _, payload in events]
         self.assertEqual(sequences, list(range(1, len(events) + 1)))
+        self.assertTrue(
+            all(
+                payload["schema_version"] == 1
+                and payload["request_id"] == request_payload()["request_id"]
+                for _, payload in events
+            )
+        )
+        deltas = [
+            payload["delta"]
+            for event, payload in events
+            if event == "assistant_delta"
+        ]
+        self.assertTrue(all(isinstance(delta, str) and delta for delta in deltas))
+        self.assertNotIn('{"answer"', "".join(deltas))
         result = next(payload for event, payload in events if event == "result")
         self.assertEqual(result["response"]["status"], "completed")
         self.assertIn("FAKE_MODEL_PROVIDER", result["response"]["limitations"])
+        self.assertEqual("".join(deltas), result["response"]["answer"])
+        done = next(payload for event, payload in events if event == "done")
+        self.assertEqual(done["status"], result["response"]["status"])
 
 
 class OrchestratorTests(unittest.IsolatedAsyncioTestCase):
@@ -362,6 +384,83 @@ class PolicyTests(unittest.TestCase):
 
 
 class OpenAICompatibleProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_complete_yields_only_visible_text_deltas(self) -> None:
+        captured: dict[str, Any] = {}
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "Docker ",
+                            "reasoning_content": "private reasoning",
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {"content": "服务未运行。"},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {"choices": [], "usage": {"total_tokens": 12}},
+            {
+                "choices": [
+                    {
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            for chunk in chunks
+        ) + "data: [DONE]\n\n"
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                content=body.encode(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = OpenAICompatibleProvider(
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model="test-model",
+            timeout_seconds=2,
+            thinking="disabled",
+            client=client,
+        )
+        try:
+            events = [
+                event
+                async for event in provider.stream_complete(
+                    messages=(ProviderMessage(role="user", content="hello"),),
+                    tools=(),
+                )
+            ]
+        finally:
+            await client.aclose()
+
+        deltas = [
+            event.text for event in events if isinstance(event, ProviderTextDelta)
+        ]
+        done = next(event for event in events if isinstance(event, ProviderStreamDone))
+        self.assertTrue(captured["stream"])
+        self.assertEqual(captured["thinking"], {"type": "disabled"})
+        self.assertNotIn("tools", captured)
+        self.assertNotIn("tool_choice", captured)
+        self.assertEqual(deltas, ["Docker ", "服务未运行。"])
+        self.assertNotIn("private reasoning", "".join(deltas))
+        self.assertEqual(done.finish_reason, "stop")
+
     async def test_configured_thinking_mode_is_sent_to_provider(self) -> None:
         captured: dict[str, Any] = {}
 

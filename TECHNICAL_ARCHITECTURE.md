@@ -170,9 +170,13 @@ Suggested actions are never executed automatically.
 
 The second endpoint uses Server-Sent Events over an authenticated HTTP POST.
 It streams lifecycle and sanitized tool-status events while the diagnosis is
-running, followed by a validated `result` event and `done`. It does not
-expose raw chain-of-thought, model tool arguments, or raw diagnostic output.
-The original JSON endpoint remains available for existing Server integrations.
+running. After the structured diagnosis is validated, a tool-free provider
+request streams learner-visible text as `assistant_delta` events. A validated
+`result` event and `done` terminate the stream. Provider chunks are text deltas
+and are not guaranteed to align one-to-one with tokenizer tokens. The Agent
+does not expose raw chain-of-thought, model tool arguments, or raw diagnostic
+output. The original JSON endpoint remains available for existing Server
+integrations.
 
 The model provider is replaceable. The current provider interface supports a
 deterministic `fake` provider for tests and an `openai_compatible` HTTP provider
@@ -315,7 +319,10 @@ sequenceDiagram
     G-->>A: Normalized and redacted evidence
     A->>P: Evidence marked as untrusted
     P-->>A: Structured diagnosis
-    A-->>S: Answer, evidence, limitations, and tool trace
+    A->>P: Validated diagnosis, tools disabled, stream=true
+    P-->>A: Learner-visible text deltas
+    A-->>S: SSE assistant_delta events
+    A-->>S: Validated result, evidence, limitations, and tool trace
 ```
 
 ### 6.4 Progress Observation
