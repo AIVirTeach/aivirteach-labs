@@ -449,5 +449,20 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
         runner.assert_not_awaited()
 
 
+class ErrorStatusTestCase(unittest.TestCase):
+    """调用方（aivirteach-server）只在 404 + "VM not found" 时认定 VM 不存在，
+    所以 libvirt 本身不可用必须映射成 503，不能落进 404。"""
+
+    def test_vm_not_found_is_404(self) -> None:
+        self.assertEqual(service._error_status("ERROR: VM not found"), 404)
+
+    def test_libvirt_unavailable_is_503(self) -> None:
+        output = (
+            "ERROR: libvirt unavailable while checking 'lab-1': "
+            "error: failed to connect to the hypervisor"
+        )
+        self.assertEqual(service._error_status(output), 503)
+
+
 if __name__ == "__main__":
     unittest.main()

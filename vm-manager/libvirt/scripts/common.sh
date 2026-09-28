@@ -37,6 +37,28 @@ as_root() {
   fi
 }
 
+# 所有 virsh 调用都走这里：固定 LC_ALL=C（sudo 会重置环境，所以放进命令里），
+# 否则非英文 locale 会翻译 dominfo 的 "State"/"shut off"，也会让下面的错误匹配失效。
+virsh_c() {
+  as_root env LC_ALL=C virsh --connect qemu:///system "$@"
+}
+
+# domain 是否存在，三种结果：
+#   返回 0 —— 存在；
+#   返回 1 —— libvirt 明确回答"没有这个 domain"；
+#   其它任何失败（libvirtd 挂了、socket 权限、sudo -n 要密码……）直接 die "libvirt unavailable"。
+# 调用方会把"不存在"当成可以删文件、可以放弃管理的依据，所以绝不能把"查不到"说成"不存在"。
+domain_exists() {
+  local name="$1" output
+  if output="$(virsh_c domstate "$name" 2>&1)"; then
+    return 0
+  fi
+  if grep -qiE "failed to get domain|domain not found" <<<"$output"; then
+    return 1
+  fi
+  die "libvirt unavailable while checking '$name': ${output}"
+}
+
 validate_lab_id() {
   local lab_id="$1"
   [[ "$lab_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$ ]] \

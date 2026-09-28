@@ -15,6 +15,7 @@ if "$ROOT/guest-tools/browser-smoke-test.sh" http://example.com \
   exit 1
 fi
 "$ROOT/../../tests/test_vm_logs.sh"
+"$ROOT/../../tests/test_vm_control.sh"
 grep -q 'qemu-kvm' "$ROOT/scripts/install-host.sh"
 grep -q 'jq' "$ROOT/scripts/install-host.sh"
 grep -q 'cloud-localds' "$ROOT/scripts/build-base-image.sh"

@@ -45,7 +45,7 @@ require_root_or_sudo
 for cmd in qemu-img cloud-localds virt-install virsh openssl; do require_command "$cmd"; done
 [[ -f "$BASE_IMAGE" ]] || die "Golden image not found: $BASE_IMAGE"
 [[ -z "$SSH_KEY_FILE" || -f "$SSH_KEY_FILE" ]] || die "SSH key not found: $SSH_KEY_FILE"
-! as_root virsh --connect qemu:///system dominfo "$LAB_ID" >/dev/null 2>&1 || die "VM already exists: $LAB_ID"
+if domain_exists "$LAB_ID"; then die "VM already exists: $LAB_ID"; fi
 
 ensure_storage_layout
 ensure_default_network

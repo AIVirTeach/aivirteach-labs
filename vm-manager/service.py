@@ -214,6 +214,10 @@ def _error_status(output: str) -> int:
     lowered = output.lower()
     if "vm not found" in lowered or "domain not found" in lowered:
         return status.HTTP_404_NOT_FOUND
+    # vm-control.sh 的 domain_exists 在 libvirt 本身出错时报这个；必须和 404 区分开，
+    # 否则调用方会把"查不到"当成"VM 不存在"。
+    if "libvirt unavailable" in lowered:
+        return status.HTTP_503_SERVICE_UNAVAILABLE
     if "already exists" in lowered:
         return status.HTTP_409_CONFLICT
     if "timed out" in lowered:
