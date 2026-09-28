@@ -34,7 +34,17 @@ fi
 
 ensure_storage_layout
 
-if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" >/dev/null 2>&1; then
+NETWORK_INFO=""
+if ! NETWORK_INFO="$(
+  as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" 2>&1
+)"; then
+  if ! grep -qiE \
+      'network not found|no network with matching name' \
+      <<<"$NETWORK_INFO"; then
+    NETWORK_INFO="${NETWORK_INFO//$'\n'/; }"
+    die "Unable to query libvirt network '$LIBVIRT_NETWORK': ${NETWORK_INFO:-unknown error}. Verify libvirtd and sudo access."
+  fi
+
   DEFAULT_NET_XML="$(mktemp)"
   cat > "$DEFAULT_NET_XML" <<'NETXML'
 <network>

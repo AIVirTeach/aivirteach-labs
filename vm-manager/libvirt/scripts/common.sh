@@ -83,14 +83,25 @@ choose_osinfo() {
 }
 
 ensure_default_network() {
-  local network_info
-  if ! as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" >/dev/null 2>&1; then
-    die "Libvirt network '$LIBVIRT_NETWORK' does not exist. Run scripts/install-host.sh first."
+  local network_info=""
+  if ! network_info="$(
+    as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK" 2>&1
+  )"; then
+    if grep -qiE \
+        'network not found|no network with matching name' \
+        <<<"$network_info"; then
+      die "Libvirt network '$LIBVIRT_NETWORK' does not exist. Run scripts/install-host.sh first."
+    fi
+
+    # A socket permission error, an unavailable daemon, or failed non-interactive
+    # sudo is not the same thing as a missing network. Preserve the real virsh/sudo
+    # error so callers know whether to use sudo, re-login, or restart libvirt.
+    network_info="${network_info//$'\n'/; }"
+    die "Unable to query libvirt network '$LIBVIRT_NETWORK': ${network_info:-unknown error}. Run this script with sudo, or verify libvirtd and /var/run/libvirt/libvirt-sock access."
   fi
   # Do not use `virsh ... | grep -q` under `set -o pipefail`: grep may close
   # the pipe after the match and make virsh report SIGPIPE, which incorrectly
   # sends an already-active network through `net-start`.
-  network_info="$(as_root virsh --connect qemu:///system net-info "$LIBVIRT_NETWORK")"
   if ! grep -q 'Active:.*yes' <<<"$network_info"; then
     as_root virsh --connect qemu:///system net-start "$LIBVIRT_NETWORK" >/dev/null
   fi

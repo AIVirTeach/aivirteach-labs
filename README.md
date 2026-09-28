@@ -172,15 +172,20 @@ DELETE /v1/vms/{lab_id}?confirm=true
 
 POST   /v1/diagnostics/{lab_id}/tools/{tool}  # 实际运行于 8765
 POST   /v1/agent/diagnose                     # 实际运行于 8770
-POST   /v1/agent/diagnose/stream              # 8770 SSE 流式进度与最终结果
+POST   /v1/agent/diagnose/stream              # 8770 SSE 进度、回答增量与最终结果
 ```
 
 Agent 的 SSE 接口使用与普通诊断接口完全相同的 JSON request body 和
 `AIVIRTEACH_AGENT_TOKEN`。它依次发送 `accepted`、`started`、
-`context_ready`、推理状态、经过清理的工具状态、`result` 和 `done`。
-`result.response` 与普通接口的 `DiagnoseResponse` 相同。该接口不会发送模型
-内部推理、工具参数或原始日志。因为它是带 Bearer Token 和 JSON body 的 POST，
-浏览器应使用 `fetch` 的 ReadableStream，而不是只能发 GET 的 `EventSource`。
+`context_ready`、推理状态、经过清理的工具状态、`answer_started`、一个或多个
+`assistant_delta`、`answer_finished`、`result` 和 `done`。客户端应按顺序追加
+每个 `assistant_delta.data.delta`，即可获得类似聊天应用的逐步回答效果；模型供应商
+可能在一个 delta 中返回一个或多个 token，因此不要假设一次事件严格等于一个 token。
+`result.response` 与普通接口的 `DiagnoseResponse` 相同，并且是最终权威结果；如果
+中途出现 `answer_failed`，客户端应以随后 `result.response.answer` 替换已显示的部分
+文本。该接口不会发送模型内部推理、工具参数或原始日志。因为它是带 Bearer Token
+和 JSON body 的 POST，浏览器应使用 `fetch` 的 ReadableStream，而不是只能发 GET
+的 `EventSource`。
 
 终端测试时，把普通 Agent request body 保存为 `request.json`：
 
