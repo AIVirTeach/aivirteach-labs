@@ -4,6 +4,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from ..models import Usage
+
 
 class ProviderError(RuntimeError):
     """A normalized model-provider failure."""
@@ -36,6 +38,7 @@ class ProviderTurn:
     text: str | None = None
     tool_calls: tuple[ProviderToolCall, ...] = field(default_factory=tuple)
     finish_reason: str = "stop"
+    usage: Usage | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ class ProviderStreamDone:
     """The terminal event for a streaming model response."""
 
     finish_reason: str = "stop"
+    usage: Usage | None = None
 
 
 ProviderStreamEvent = ProviderTextDelta | ProviderStreamDone
