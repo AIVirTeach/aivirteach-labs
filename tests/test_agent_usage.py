@@ -13,9 +13,11 @@ from aivirteach_agent.providers import (
     OpenAICompatibleProvider,
     ProviderMessage,
     ProviderStreamDone,
+    ProviderTextDelta,
     ProviderToolCall,
     ProviderTurn,
 )
+from aivirteach_agent.providers.base import ProviderError
 from aivirteach_agent.providers.openai_compatible import normalize_usage
 
 # Constructed from official docs (DeepSeek chat completion `usage` object),
@@ -283,6 +285,20 @@ class StreamingFakeProvider(FakeProvider):
             yield event
 
 
+class ScriptedStreamProvider(FakeProvider):
+    """FakeProvider whose stream replays fixed events; an exception is raised."""
+
+    def __init__(self, turns: list[ProviderTurn], stream_events: list[Any]) -> None:
+        super().__init__(turns)
+        self._stream_events = stream_events
+
+    async def stream_complete(self, *, messages: Any, tools: Any) -> Any:
+        for event in self._stream_events:
+            if isinstance(event, Exception):
+                raise event
+            yield event
+
+
 class OrchestratorUsageTests(unittest.IsolatedAsyncioTestCase):
     def _orchestrator(self, provider: FakeProvider) -> AgentOrchestrator:
         return AgentOrchestrator(
@@ -365,6 +381,41 @@ class OrchestratorUsageTests(unittest.IsolatedAsyncioTestCase):
                 DiagnoseRequest.model_validate(request_payload()), on_event=ignore
             )
         self.assertEqual(response.usage, usage(0, 9, 4))
+
+    async def _stream_with(self, stream_events: list[Any]) -> DiagnoseResponse:
+        provider = ScriptedStreamProvider(
+            [_tool_turn("c1", usage(10, 20, 5)), ProviderTurn(text=FINAL_ANSWER, usage=usage(1, 2, 3))],
+            stream_events,
+        )
+
+        async def ignore(event: str, data: dict[str, Any]) -> None:
+            return None
+
+        return await self._orchestrator(provider).diagnose_stream(
+            DiagnoseRequest.model_validate(request_payload()), on_event=ignore
+        )
+
+    async def test_incomplete_stream_fallback_still_counts_stream_usage(self) -> None:
+        response = await self._stream_with(
+            [
+                ProviderTextDelta(text="部分回答"),
+                ProviderStreamDone(finish_reason="length", usage=usage(100, 0, 7)),
+            ]
+        )
+        self.assertEqual(response.status, "partial")
+        self.assertIn("MODEL_STREAM_INCOMPLETE", response.limitations)
+        self.assertEqual(response.usage, usage(111, 22, 15))
+
+    async def test_failed_stream_fallback_keeps_diagnosis_usage_only(self) -> None:
+        # The aborted stream never reported usage, so the total is incomplete
+        # (warned) and only the diagnosis calls count.
+        with self.assertLogs("aivirteach.agent", level="WARNING"):
+            response = await self._stream_with(
+                [ProviderTextDelta(text="部分回答"), ProviderError("stream broke")]
+            )
+        self.assertEqual(response.status, "partial")
+        self.assertIn("MODEL_STREAM_ERROR", response.limitations)
+        self.assertEqual(response.usage, usage(11, 22, 8))
 
 
 class ApiUsageTests(unittest.IsolatedAsyncioTestCase):
