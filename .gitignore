@@ -10,3 +10,4 @@ export_env.sh
 ./agent-service/config/agent.env
 ./vm-manager/config/api.env
 \n.env\n
+.DS_Store
