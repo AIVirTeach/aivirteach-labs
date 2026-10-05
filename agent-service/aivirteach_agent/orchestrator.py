@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -21,6 +22,7 @@ from .models import (
     Evidence,
     ToolName,
     ToolTrace,
+    Usage,
 )
 from .prompts import FINALIZATION_PROMPT, answer_render_messages, initial_messages
 from .providers import (
@@ -40,6 +42,7 @@ from .tools import (
     validate_tool_call,
 )
 
+LOG = logging.getLogger("aivirteach.agent")
 ProgressCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 MAX_STREAM_ANSWER_CHARS = 12_000
 
@@ -82,6 +85,7 @@ class AgentOrchestrator:
         tool_calls_used = 0
         final_turn: ProviderTurn | None = None
         partial = False
+        usages: list[Usage | None] = []
 
         try:
             async with asyncio.timeout(self._settings.total_timeout_seconds):
@@ -96,6 +100,7 @@ class AgentOrchestrator:
                         messages,
                         available_provider_tools(request.diagnostic_scope),
                     )
+                    usages.append(turn.usage)
                     if not turn.tool_calls:
                         await _emit(
                             on_event,
@@ -335,6 +340,7 @@ class AgentOrchestrator:
                     )
                     messages.append(ProviderMessage(role="user", content=FINALIZATION_PROMPT))
                     final_turn = await self._model_turn(messages, [])
+                    usages.append(final_turn.usage)
         except TimeoutError:
             partial = True
             limitations.append("AGENT_TOTAL_TIMEOUT")
@@ -350,6 +356,7 @@ class AgentOrchestrator:
             traces=traces,
             limitations=limitations,
             partial=partial,
+            usage=_sum_usage(usages),
         )
 
     async def diagnose_stream(
@@ -365,6 +372,7 @@ class AgentOrchestrator:
         answer_parts: list[str] = []
         answer_chars = 0
         finish_reason: str | None = None
+        stream_usage: Usage | None = None
         stream_error: str | None = None
         try:
             async with asyncio.timeout(self._settings.model_timeout_seconds):
@@ -374,6 +382,7 @@ class AgentOrchestrator:
                 ):
                     if isinstance(event, ProviderStreamDone):
                         finish_reason = event.finish_reason
+                        stream_usage = event.usage
                         continue
                     if not isinstance(event, ProviderTextDelta) or not event.text:
                         continue
@@ -395,6 +404,7 @@ class AgentOrchestrator:
             stream_error = "MODEL_STREAM_ERROR"
 
         streamed_answer = "".join(answer_parts)
+        usage = _sum_usage([response.usage, stream_usage])
         if stream_error is None and not streamed_answer.strip():
             stream_error = "MODEL_STREAM_EMPTY"
         if stream_error is None and finish_reason != "stop":
@@ -413,7 +423,11 @@ class AgentOrchestrator:
                 },
             )
             return response.model_copy(
-                update={"status": "partial", "limitations": limitations}
+                update={
+                    "status": "partial",
+                    "limitations": limitations,
+                    "usage": usage,
+                }
             )
 
         await _emit(
@@ -425,7 +439,7 @@ class AgentOrchestrator:
                 "finish_reason": finish_reason,
             },
         )
-        return response.model_copy(update={"answer": streamed_answer})
+        return response.model_copy(update={"answer": streamed_answer, "usage": usage})
 
     async def _model_turn(self, messages: list[ProviderMessage], tools: list[Any]) -> ProviderTurn:
         try:
@@ -445,6 +459,7 @@ class AgentOrchestrator:
         traces: list[ToolTrace],
         limitations: list[str],
         partial: bool,
+        usage: Usage | None,
     ) -> DiagnoseResponse:
         text = (final_turn.text if final_turn else None) or "诊断未能在限定时间内生成完整回答。"
         structured = True
@@ -479,7 +494,27 @@ class AgentOrchestrator:
             suggested_actions=draft.suggested_actions,
             limitations=all_limitations,
             tool_trace=traces,
+            usage=usage,
         )
+
+
+def _sum_usage(usages: list[Usage | None]) -> Usage | None:
+    """Total the usage of every provider call; ``None`` if none reported any."""
+
+    reported = [item for item in usages if item is not None]
+    if not reported:
+        return None
+    if len(reported) != len(usages):
+        LOG.warning(
+            "token usage reported by %d of %d provider calls; total is incomplete",
+            len(reported),
+            len(usages),
+        )
+    return Usage(
+        input_cache_hit_tokens=sum(item.input_cache_hit_tokens for item in reported),
+        input_cache_miss_tokens=sum(item.input_cache_miss_tokens for item in reported),
+        output_tokens=sum(item.output_tokens for item in reported),
+    )
 
 
 def _parse_draft(text: str) -> AnswerDraft:

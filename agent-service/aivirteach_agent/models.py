@@ -183,6 +183,14 @@ class ToolTrace(StrictModel):
     error_code: str | None = None
 
 
+class Usage(StrictModel):
+    """Token usage normalized from the model provider for metering."""
+
+    input_cache_hit_tokens: int = Field(ge=0)
+    input_cache_miss_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
 class DiagnoseResponse(StrictModel):
     request_id: UUID
     status: Literal["completed", "partial"]
@@ -193,6 +201,7 @@ class DiagnoseResponse(StrictModel):
     suggested_actions: list[SuggestedAction]
     limitations: list[str]
     tool_trace: list[ToolTrace]
+    usage: Usage | None = None
 
 
 def validate_relative_path(value: str) -> str:

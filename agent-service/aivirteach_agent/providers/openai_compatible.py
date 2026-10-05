@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import httpx
 
+from ..models import Usage
 from .base import (
     ProviderError,
     ProviderMessage,
@@ -16,6 +18,39 @@ from .base import (
     ProviderToolCall,
     ProviderTurn,
 )
+
+LOG = logging.getLogger("aivirteach.agent")
+
+
+def normalize_usage(raw: Any) -> Usage | None:
+    """Map a Chat Completions ``usage`` object to ``Usage``.
+
+    Missing or malformed usage yields ``None`` (never raises) so a metering
+    problem cannot fail a diagnosis. Without the cache hit/miss breakdown the
+    usage is also ``None``: guessing a split would silently mis-price the turn.
+    """
+
+    usage = _usage_from_dict(raw) if isinstance(raw, dict) else None
+    if usage is None:
+        LOG.warning("model provider returned missing or malformed token usage")
+    return usage
+
+
+def _usage_from_dict(raw: dict[str, Any]) -> Usage | None:
+    hit = raw.get("prompt_cache_hit_tokens")
+    miss = raw.get("prompt_cache_miss_tokens")
+    output = raw.get("completion_tokens")
+    if not all(_is_token_count(value) for value in (hit, miss, output)):
+        return None
+    return Usage(
+        input_cache_hit_tokens=hit,
+        input_cache_miss_tokens=miss,
+        output_tokens=output,
+    )
+
+
+def _is_token_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 class OpenAICompatibleProvider:
@@ -65,6 +100,7 @@ class OpenAICompatibleProvider:
                 text=message.get("content"),
                 tool_calls=calls,
                 finish_reason=choice.get("finish_reason", "unknown"),
+                usage=normalize_usage(body.get("usage")),
             )
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ProviderError("model provider returned an invalid response") from exc
@@ -84,7 +120,10 @@ class OpenAICompatibleProvider:
 
         payload = self._request_payload(messages=messages, tools=tools)
         payload["stream"] = True
+        # Without this the provider never sends token usage while streaming.
+        payload["stream_options"] = {"include_usage": True}
         finish_reason: str | None = None
+        raw_usage: Any = None
         stream_finished = False
 
         try:
@@ -124,6 +163,11 @@ class OpenAICompatibleProvider:
                         )
                     if event.get("error") is not None:
                         raise ProviderError("model provider stream returned an error")
+
+                    # The usage-only final event has no choices, so capture
+                    # usage before the empty-choices skip below.
+                    if event.get("usage") is not None:
+                        raw_usage = event["usage"]
 
                     choices = event.get("choices")
                     # OpenAI-compatible providers may send a final usage-only
@@ -176,7 +220,10 @@ class OpenAICompatibleProvider:
         # Accept that shape, but reject a silently truncated stream.
         if not stream_finished and finish_reason is None:
             raise ProviderError("model provider stream ended before completion")
-        yield ProviderStreamDone(finish_reason=finish_reason or "stop")
+        yield ProviderStreamDone(
+            finish_reason=finish_reason or "stop",
+            usage=normalize_usage(raw_usage),
+        )
 
     def _request_payload(
         self,
