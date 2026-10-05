@@ -48,9 +48,12 @@ class NormalizeUsageTests(unittest.TestCase):
     def test_cache_breakdown_is_mapped(self) -> None:
         self.assertEqual(normalize_usage(DEEPSEEK_USAGE), DEEPSEEK_EXPECTED)
 
-    def test_without_cache_fields_whole_prompt_counts_as_miss(self) -> None:
+    def test_without_cache_fields_is_none_not_a_guessed_split(self) -> None:
+        # A provider without the cache breakdown must not be booked as all
+        # miss (or all hit): that would silently mis-price every turn.
         raw = {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150}
-        self.assertEqual(normalize_usage(raw), usage(0, 120, 30))
+        with self.assertLogs("aivirteach.agent", level="WARNING"):
+            self.assertIsNone(normalize_usage(raw))
 
     def test_zero_values_are_valid(self) -> None:
         raw = {

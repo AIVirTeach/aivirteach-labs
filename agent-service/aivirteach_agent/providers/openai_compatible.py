@@ -26,8 +26,8 @@ def normalize_usage(raw: Any) -> Usage | None:
     """Map a Chat Completions ``usage`` object to ``Usage``.
 
     Missing or malformed usage yields ``None`` (never raises) so a metering
-    problem cannot fail a diagnosis. Without a cache breakdown the whole
-    prompt is counted as a cache miss.
+    problem cannot fail a diagnosis. Without the cache hit/miss breakdown the
+    usage is also ``None``: guessing a split would silently mis-price the turn.
     """
 
     usage = _usage_from_dict(raw) if isinstance(raw, dict) else None
@@ -39,8 +39,6 @@ def normalize_usage(raw: Any) -> Usage | None:
 def _usage_from_dict(raw: dict[str, Any]) -> Usage | None:
     hit = raw.get("prompt_cache_hit_tokens")
     miss = raw.get("prompt_cache_miss_tokens")
-    if hit is None and miss is None:
-        hit, miss = 0, raw.get("prompt_tokens")
     output = raw.get("completion_tokens")
     if not all(_is_token_count(value) for value in (hit, miss, output)):
         return None
