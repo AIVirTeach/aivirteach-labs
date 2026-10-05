@@ -1,5 +1,4 @@
 # aivirteach-labs
-AIVirTeach Labs Runtime — Go + KubeVirt VM 编排, noVNC, Evaluator
 
 Labs 负责执行和可靠投递；课程进度的 canonical state 仍只属于 `aivirteach-server`。
 
