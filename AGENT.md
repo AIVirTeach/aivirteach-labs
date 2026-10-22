@@ -209,9 +209,11 @@ It never executes suggested actions.
 
 `answer` contains learner-facing Markdown, including code fences for terminal
 commands. If the model's diagnostic fields fail validation, the Agent retains
-only a nonblank answer of at most 12,000 characters from the first JSON object
-and returns `partial` with `MODEL_OUTPUT_UNSTRUCTURED`. It does not scan nested
-objects for substitute answers. Broken JSON or an unusable answer produces a
+only a nonblank answer of at most 12,000 characters from a unique outer JSON
+object and returns `partial` with `MODEL_OUTPUT_UNSTRUCTURED`. Complete preamble
+containers without an outer answer are skipped. Nested answers are never
+substitutes for the enclosing object. Incomplete containers, multiple answer
+objects, or an unusable answer produce a
 short retry message instead of exposing the model's raw output. Chinese requests
 receive a Chinese retry message; other languages currently receive English.
 The same fallback applies when the final rendering stream fails.

@@ -65,6 +65,44 @@ class AnswerFallbackTests(unittest.TestCase):
         self.assertEqual(response.answer, answer)
         self.assertEqual(response.status, "completed")
 
+    def test_balanced_preamble_does_not_hide_the_answer(self):
+        answer = 'Use `printf "\\n"`.\n\nDocker is inactive.'
+        for preamble in [
+            "Expected format: {answer: text}. Final response:\n",
+            'Context: {"status": "ready"}. Final response:\n',
+            'Context: {"debug": {"answer": "not the reply"}}.\n',
+            'Examples: [{"answer": "not the reply"}].\n',
+            'Example: {"note": "escaped \\"quote\\" and } bracket"}.\n',
+        ]:
+            with self.subTest(preamble=preamble):
+                response = self.response(preamble + json.dumps({"answer": answer}))
+                self.assertEqual(response.answer, answer)
+                self.assertEqual(response.status, "completed")
+
+    def test_ambiguous_and_truncated_containers_are_rejected(self):
+        for raw in [
+            '[{"answer": "nested array answer"}',
+            '[{"answer": "nested array answer"}]',
+            '{"answer": "mismatched"]',
+            '{"debug": {"answer": "nested object answer"}',
+            '{"answer": "first"} {"answer": "second"}',
+            '{"answer": "first"} {"answer": "truncated',
+        ]:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    self.response(raw).answer, "暂时无法生成完整回答，请稍后重试。"
+                )
+
+    def test_json_string_escaping_does_not_change_container_boundaries(self):
+        fragments = ["{", "}", "[", "]", '"', "\\", "\n", "中文", "```bash"]
+        for left in fragments:
+            for right in fragments:
+                answer = f"Check {left}{right} literally."
+                with self.subTest(answer=answer):
+                    response = self.response(json.dumps({"answer": answer}))
+                    self.assertEqual(response.answer, answer)
+                    self.assertEqual(response.status, "completed")
+
     def test_fenced_json_can_recover_only_the_answer(self):
         response = self.response(
             "```json\n" + json.dumps({"answer": "可用正文", "diagnosis": []}) + "\n```"

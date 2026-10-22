@@ -524,15 +524,52 @@ def _parse_output_object(text: str) -> dict[str, Any]:
     elif cleaned.startswith("```") and cleaned.endswith("```"):
         cleaned = cleaned[3:-3].strip()
 
-    # Allow a provider preamble, but never scan into a broken outer object for
-    # a nested object that happens to match the answer schema.
-    offset = cleaned.find("{")
-    if offset < 0:
-        raise ValueError("No JSON object found")
-    payload, _ = json.JSONDecoder().raw_decode(cleaned[offset:])
-    if not isinstance(payload, dict):
-        raise ValueError("Model output must be a JSON object")
-    return payload
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    start = 0
+    answer_object: dict[str, Any] | None = None
+    closing = {"}": "{", "]": "["}
+
+    for offset, character in enumerate(cleaned):
+        if not stack:
+            if character in "{[":
+                start = offset
+                stack.append(character)
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+        elif character in closing:
+            if stack.pop() != closing[character]:
+                raise ValueError("Mismatched model output container")
+            if stack:
+                continue
+            # Decode complete outer containers only. A nested answer is never
+            # a substitute for a broken or unrelated enclosing object.
+            try:
+                payload = json.loads(cleaned[start : offset + 1])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and "answer" in payload:
+                if answer_object is not None:
+                    raise ValueError("Multiple model answer objects")
+                answer_object = payload
+
+    if stack:
+        raise ValueError("Incomplete model output container")
+    if answer_object is None:
+        raise ValueError("No model answer object found")
+    return answer_object
 
 
 def _parse_draft(text: str) -> AnswerDraft:
