@@ -470,7 +470,7 @@ class AgentOrchestrator:
             partial = True
             limitations.append("MODEL_OUTPUT_UNSTRUCTURED")
             draft = AnswerDraft(
-                answer=text[:12_000],
+                answer=_fallback_answer(text, request.response_language),
                 diagnosis=Diagnosis(summary="模型未返回可验证的结构化诊断。", confidence=Confidence.LOW),
                 course_alignment=CourseAlignment(),
             )
@@ -517,39 +517,47 @@ def _sum_usage(usages: list[Usage | None]) -> Usage | None:
     )
 
 
-def _parse_draft(text: str) -> AnswerDraft:
+def _parse_output_object(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```json") and cleaned.endswith("```"):
         cleaned = cleaned[7:-3].strip()
     elif cleaned.startswith("```") and cleaned.endswith("```"):
         cleaned = cleaned[3:-3].strip()
 
-    decoder = json.JSONDecoder()
-    validation_error: ValidationError | None = None
-    for offset, character in enumerate(cleaned):
-        if character != "{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(cleaned[offset:])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
+    # Allow a provider preamble, but never scan into a broken outer object for
+    # a nested object that happens to match the answer schema.
+    offset = cleaned.find("{")
+    if offset < 0:
+        raise ValueError("No JSON object found")
+    payload, _ = json.JSONDecoder().raw_decode(cleaned[offset:])
+    if not isinstance(payload, dict):
+        raise ValueError("Model output must be a JSON object")
+    return payload
 
-        # Some compatible providers return a single limitation as a string
-        # even when explicitly asked for an array. Normalize only this safe,
-        # common shape; the rest of the response remains strictly validated.
-        if isinstance(payload.get("limitations"), str):
-            limitation = payload["limitations"].strip()
-            payload["limitations"] = [limitation] if limitation else []
-        try:
-            return AnswerDraft.model_validate(payload)
-        except ValidationError as exc:
-            validation_error = exc
 
-    if validation_error is not None:
-        raise validation_error
-    raise json.JSONDecodeError("No valid JSON object found", cleaned, 0)
+def _parse_draft(text: str) -> AnswerDraft:
+    payload = _parse_output_object(text)
+    if isinstance(payload.get("limitations"), str):
+        limitation = payload["limitations"].strip()
+        payload["limitations"] = [limitation] if limitation else []
+    draft = AnswerDraft.model_validate(payload)
+    if not draft.answer.strip():
+        raise ValueError("Model answer must not be blank")
+    return draft
+
+
+def _fallback_answer(text: str, language: str) -> str:
+    # Salvage only the public answer. Invalid diagnostic metadata must not be
+    # promoted into a validated diagnosis or rendered as learner-facing text.
+    try:
+        answer = _parse_output_object(text).get("answer")
+        if isinstance(answer, str) and answer.strip() and len(answer) <= 12_000:
+            return answer
+    except ValueError:
+        pass
+    if language.lower().startswith("zh"):
+        return "暂时无法生成完整回答，请稍后重试。"
+    return "I couldn't generate a complete answer. Please try again."
 
 
 def _tool_message(call_id: str, payload: dict[str, Any]) -> ProviderMessage:
